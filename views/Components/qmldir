@@ -1,3 +1,8 @@
 module Components
 AppBar AppBar.qml
+MarqueeText MarqueeText.qml
 NfcCardWriter NfcCardWriter.qml
+PosterCell PosterCell.qml
+PosterGrid PosterGrid.qml
+PosterShelf PosterShelf.qml
+ShelfList ShelfList.qml

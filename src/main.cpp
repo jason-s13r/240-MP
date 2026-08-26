@@ -26,6 +26,7 @@
 #include "player/MpvController.h"
 #include "input/InputManager.h"
 #include "input/IdleTracker.h"
+#include "net/AppNamFactory.h"
 #include "update/UpdateManager.h"
 #include "util/ExecPath.h"
 #include "util/DisplayHandoff.h"
@@ -205,6 +206,11 @@ int main(int argc, char *argv[]) {
 #endif
 
     engine.addImportPath(appRoot + "/views");
+
+    // Poster art is the only thing QML fetches over the network; this gives that
+    // fetch a disk cache and the *.plex.direct leniency the module backends
+    // already apply to their own replies. Must precede engine.load().
+    engine.setNetworkAccessManagerFactory(new AppNamFactory(dataRoot));
 
     engine.load(QUrl::fromLocalFile(appRoot + "/Main.qml"));
     if (engine.rootObjects().isEmpty()) {

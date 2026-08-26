@@ -100,6 +100,18 @@ FocusScope {
             })
         }
 
+        // Poster Grid — browse movies and shows as cover art instead of text
+        // rows, and show that art on the detail views. Off by default.
+        items.push({
+            type: "list_single",
+            key: "poster_grid",
+            label: "Poster Grid",
+            options: ["Off", "On"],
+            value: appSettings["poster_grid"] || "Off",
+            description: "[ON] Browse movies and shows as a grid of cover art\n[OFF] Browse as a text list",
+            moduleId: ""
+        })
+
         // Auto Crop — default crop (panscan) state for every video. Off by default;
         // crop can still be toggled live during playback via the mpv OSC.
         items.push({

@@ -537,6 +537,14 @@ FocusScope {
 - `navParams.fromAppStartup` is `true` only when the app booted straight into this module because it's the configured **Start On Module** — never when the user navigated in from the main menu. `Main.qml` sets it on the startup-module `setSource`; a module's `Root.qml` forwards it by passing `navParams` into its first `navigateTo`. Use it to gate boot-only behaviour such as Ambient Mode's Auto-Launch Playback, so the module's normal screens stay reachable from the menu.
 - A view that emits `navigateTo` from its own `Component.onCompleted` must defer it with `Qt.callLater` — the router's `Connections { target: internalLoader.item }` only rebinds after `setSource()` returns, so a synchronous emit goes out before anything is listening.
 
+## Poster Art
+
+Off by default. The global `poster_grid` app setting (Settings → APPLICATION) switches the media modules between text rows and cover art. `Main.qml` mirrors it as `root.posterGrid`, which views bind the same teardown-safe way they bind `root.hints`.
+
+The building blocks are shared and backend-agnostic: a host passes resolver functions (`posterSource`, `titleText`, …) and the component never learns which backend the items came from. [PosterGrid](#postergrid-viewscomponentspostergridqml) is the tiled browser, [PosterShelf](#postershelf-viewscomponentspostershelfqml) one horizontal row under a heading, [ShelfList](#shelflist-viewscomponentsshelflistqml) a stack of those, and [PosterCell](#postercell-viewscomponentspostercellqml) the single cell all of them draw.
+
+QML fetches those images through the QML engine's own `QNetworkAccessManager`, which is separate from the one each backend owns. `AppNamFactory` (`src/net/`, installed in `main.cpp` before `engine.load`) gives that manager a 64 MB `QNetworkDiskCache` under `<dataRoot>/cache/images` and the same narrow `*.plex.direct` certificate leniency as `PlexBackend::ignoreSslErrors` — without which posters silently fail on a system with an incomplete CA bundle.
+
 ## Components (WIP)
 
 Shared QML components live in `views/Components/` (registered via `qmldir`, imported as `import Components`).
@@ -550,6 +558,82 @@ Shared QML components live in `views/Components/` (registered via `qmldir`, impo
 | `subtitle` | `string` | Optional context label (hidden when empty) |
 
 The icon is automatically colorized to the app accent color
+
+### PosterGrid (`views/Components/PosterGrid.qml`)
+
+Cover-art browser: a `GridView` of poster cells with one shared title line beneath it for the selected item (per-cell captions do not fit at 480p). The app's only 2D-navigable view.
+
+| Property | Type | Description |
+|---|---|---|
+| `model` | `var` | Item array, same model the text `ListView` uses |
+| `currentIndex` | `int` | Selected cell |
+| `posterSource` | `function(item, w, h)` | Returns the artwork URL, or `""` for none |
+| `titleText` | `function(item)` | Row label, also used on the placeholder card |
+| `rows` | `int` | Rows of art; the column count falls out of what fits |
+| `browseEnabled` | `bool` | Right on the last column emits `browseRequested` instead of wrapping |
+| `exitUpEnabled` | `bool` | Up off the top row emits `exitUp` instead of wrapping |
+
+Signals: `activated()`, `browseRequested()`, `backRequested()`, `exitUp()`. Methods: `positionAtCurrent(atBeginning)`, `moveTo(i)`.
+
+Rows are the fixed quantity and columns are whatever fits, so the grid narrows itself when the A–Z panel is up. A cell is exactly one poster plus one gutter in both axes — never `width / columns`, which pours the leftover into the column gap and makes the spacing read wider across than down; the grid instead picks whichever of two column counts wastes less. Wrap rules, since there is no other 2D view to copy: **Left/Right** move within the row and wrap at its ends; **Up/Down** move by a row and wrap top↔bottom into the same column, clamped to the last item.
+
+### PosterShelf (`views/Components/PosterShelf.qml`)
+
+One horizontal row of cover art under a section heading, and the unit `ShelfList` is built from. The heading is the shelf's primary text and the selected item's title is the caption beneath it. Everything sizes off the shelf's own height, so a host sets only width and height.
+
+| Property | Type | Description |
+|---|---|---|
+| `sectionTitle` | `string` | Heading above the row; empty takes no room |
+| `model` / `currentIndex` | `var` / `int` | Item array and selected cell |
+| `posterSource` / `titleText` | `function` | Same contract as `PosterGrid` |
+| `posterAspect` | `real` | Fallback cell shape when there is no per-item rule |
+| `posterAspectFor` | `function(item)` | Per-item cell shape — see below |
+| `badgeSource` | `function(item, w, h)` | Corner artwork URL, asked for on landscape cells only |
+| `badgeAspect` | `real` | Shape of that corner art (`2/3` cover art unless the host says otherwise) |
+| `captionSource` | `function(item)` | `{ top, bottom, corner }`, asked for on landscape cells only |
+| `showTitleLine` | `bool` | Selected item's title beneath the row; off inside a `ShelfList` |
+| `headingMuted` | `bool` | Heading at the caption's size and colour, for a shelf whose cells name the row |
+| `highlighted` | `bool` | Whether this shelf holds the selection; set by a host driving it from outside |
+| `currentItemData` | `var` | The selected item (read-only) |
+
+Signals: `activated()`, `moveUp()`, `moveDown()`, `backRequested()`, `moved()`. Methods: `positionAtCurrent()`, `moveTo(i)`, `moveLeft()`, `moveRight()`.
+
+Cells share the shelf's height but not its width: with `posterAspectFor` supplied, each cell is cut to the shape of the art it holds, so a 16:9 still and a 2:3 cover both appear whole. Ragged widths are the cost, and the better trade here — a shelf is a handful of items, where `PosterGrid`'s uniform cells earn their crop.
+
+`badgeSource` and `captionSource` are asked only when `aspectFor(item) > 1`: a portrait cell is already cover art, so a cover-art badge would be the same picture twice. The gate lives here rather than in every host because it follows from the cell's shape.
+
+**Left/Right** move along the shelf and wrap at its ends. **Up/Down** are *not* handled: a shelf never knows what is above or below it, so it reports them and the host decides.
+
+### ShelfList (`views/Components/ShelfList.qml`)
+
+A vertical stack of shelves — the sectioned browse view. Up/Down change shelf, Left/Right move along the focused one, so the whole thing is one 2D surface even though each shelf scrolls independently.
+
+| Property | Type | Description |
+|---|---|---|
+| `model` | `var` | `[{ title: string, items: array }]`, one shelf per entry |
+| `posterSource` / `titleText` | `function` | Same contract as `PosterGrid` |
+| `posterAspectFor` / `badgeSource` / `badgeAspect` / `captionSource` | | Forwarded to every shelf |
+| `shelfH` | `real` | One shelf's slot; two fit the 480p content box, the rest scroll |
+| `wrapVertically` | `bool` | Off when the stack is one section of a larger column — the ends emit `exitUp`/`exitDown` instead of looping |
+| `shelfIndex` / `itemIndex` | `int` | The two-part selection, for the host's saved list state (read-only) |
+
+Signals: `activated(var item)` — the item itself, since the host cannot look it up from one index — `backRequested()`, and `exitUp()`/`exitDown()` when `wrapVertically` is off. Methods: `focusEnd(atLast)`, the entry point for a host handing focus back in, and `setPosition(shelfIdx, column)`, which seats the selection before the delegates exist.
+
+Up and Down are **grid-like** — they land on the same column rather than wherever each shelf was left. The wanted `column` is kept separate from any shelf's index, the way a text cursor keeps its wanted column, so passing through a short shelf does not shrink it for every shelf after. It doubles as per-shelf memory: a shelf scrolled out of view is destroyed with its `currentIndex` and reads the column back when recreated.
+
+### PosterCell (`views/Components/PosterCell.qml`)
+
+One cover-art cell — artwork, titled placeholder when there is none, selection ring — shared by `PosterGrid` and `PosterShelf`. The ring is drawn on every cell at the same thickness and only coloured when selected, so nothing shifts as the selection travels. The gutter between neighbours is two rings wide, so adjacent rings meet exactly.
+
+`badgeArt` draws a second, smaller artwork over the bottom-left corner, inset a pixel with a 1px `surfaceColor` hairline so the two images separate. Its width is what a 2:3 cover measures at a third of the cell's height whatever shape `badgeAspect` says it is, so every badge takes the same bite out of the artwork.
+
+`captionTop`, `captionBottom` and `cornerLabel` are the words that go with it, named for where they sit: `captionTop` along the top edge, `captionBottom` along the bottom from wherever the badge leaves off, `cornerLabel` at the far end of that lower line. A line is an eighth of the cell tall, fixed rather than derived from the badge, so lines land at the same height on every cell in a row. Only the bottom line gives up width to `cornerLabel`; all of them are outlined in `surfaceColor`, since they lie over photography of any brightness.
+
+On the placeholder card a title past twice as tall as it is wide takes a quarter turn and is read up the card — a **spine**. Turning rather than stacking is what makes a long name fit: stacked, a word costs its length in height.
+
+### MarqueeText (`views/Components/MarqueeText.qml`)
+
+A single line that scrolls itself when it exceeds `maxWidth` (1500 ms pause → scroll → 2000 ms pause → reset). The idiom is hand-copied in every text list row; this is the shared copy the poster views use. Sizes its own width to the text so a highlight anchored to it hugs the glyphs.
 
 ### NfcCardWriter (`views/Components/NfcCardWriter.qml`)
 

@@ -88,6 +88,11 @@ Window {
     property string surfaceColor:   (allThemes[currentTheme] || allThemes["Video 1"]).surface
     property string accentColor:    (allThemes[currentTheme] || allThemes["Video 1"]).accent
 
+    // Poster art feature switch, read by the media modules' browse and detail
+    // views. Mirrors color_scheme: seeded in Component.onCompleted, kept live by
+    // onAppSettingChanged. Views must bind root.posterGrid, never appCore.
+    property bool posterGrid: false
+
     readonly property real sw: width
     readonly property real sh: height
 
@@ -96,6 +101,8 @@ Window {
         function onAppSettingChanged(key, value) {
             if (key === "color_scheme") {
                 root.currentTheme = value
+            } else if (key === "poster_grid") {
+                root.posterGrid = (value === "On")
             } else if (key === "screensaver_timeout") {
                 var sec = parseInt(value)
                 if (sec > 0) {
@@ -129,6 +136,8 @@ Window {
             t["Custom"] = custom
             root.allThemes = t
         }
+
+        root.posterGrid = ((cfg.app && cfg.app.poster_grid) || "Off") === "On"
 
         var savedTheme = (cfg.app && cfg.app.color_scheme) || "Video 1"
         if (savedTheme === "Custom" && !root.allThemes["Custom"]) {
