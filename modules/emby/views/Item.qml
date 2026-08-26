@@ -116,6 +116,10 @@ FocusScope {
                 seriesId: d.seriesId || "",
                 mediaSourceId: d.mediaSourceId || d.itemId,
                 title: d.title,
+                // Named on mpv's OSD as "Show S01E01: Title" — see Player.qml's
+                // osdTitle. Absent on a movie, which is just its title.
+                grandparentTitle: d.grandparentTitle || "",
+                contentRating: d.contentRating || "",
                 viewOffset: d.viewOffset || 0,
                 audioStreams: d.audioStreams || [],
                 subtitleStreams: d.subtitleStreams || [],

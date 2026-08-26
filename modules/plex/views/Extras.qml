@@ -75,6 +75,13 @@ FocusScope {
                 partKey: d.partKey,
                 partId: d.partId,
                 title: d.title,
+                grandparentTitle: d.grandparentTitle || "",
+                // Cover art for mpv's OSD title block. Asked for larger than it
+                // will be drawn: the app crops it to the window's own pixels.
+                posterUrl: plexBackend.poster_url(d, 300, 450, "grid"),
+                contentRating: d.contentRating || "",
+                parentIndex: d.parentIndex || 0,
+                index: d.index || 0,
                 viewOffset: d.viewOffset || 0,
                 duration: d.duration || 0,
                 audioStreams: d.audioStreams || [],

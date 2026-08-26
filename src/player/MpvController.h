@@ -6,6 +6,8 @@
 #include <QJsonArray>
 #include <QStringList>
 
+class QNetworkAccessManager;
+
 class AppCore;
 class DisplayHandoff;
 
@@ -46,6 +48,37 @@ public:
     Q_INVOKABLE void stop();
     Q_INVOKABLE void seekTo(int positionMs);
     Q_INVOKABLE void sendKey(const QString &key);
+    // What is about to play, as the OSC's top-left block names it: the item's own
+    // title, the show or channel it belongs to underneath (empty for a movie),
+    // and cover art beside them (empty when the module has none).
+    //
+    // Call it immediately before loadAndPlay(): a stream URL tells mpv nothing
+    // (Plex and Jellyfin hand out master.m3u8). Consumed and cleared by the next
+    // launch, so a caller that sets nothing gets mpv's own media-title rather
+    // than the last item's. Not for playlists — the title it forces would pin
+    // one name over every entry.
+    //
+    // Right-aligned on that second line is one of two things, never both: a
+    // certificate, boxed the way a rating card is, or a plain label for a module
+    // with no certificate (YouTube names the playlist there). A rating wins if
+    // both are set.
+    //
+    // posterAspect is the shape the art is drawn in, width over height: 0 keeps
+    // the 2:3 of cover art; a module handing over something else says so (1 for
+    // an avatar, 16/9 for a thumbnail) so the OSC reserves a box of that shape.
+    Q_INVOKABLE void setNowPlaying(const QString &title,
+                                   const QString &showTitle = {},
+                                   const QString &posterUrl = {},
+                                   const QString &contentRating = {},
+                                   const QString &label = {},
+                                   double posterAspect = 0.0);
+
+    // The server and profile the app's own corner shows on every browse screen.
+    // Separate from setNowPlaying because it says nothing about the item — it is
+    // the session. Same one-launch lifetime, so a module that does not set it
+    // gets a corner with only the clock rather than the last one's.
+    Q_INVOKABLE void setNowPlayingSource(const QString &server,
+                                         const QString &profile);
     Q_INVOKABLE void showOsdSkipPrompt();
     Q_INVOKABLE void clearOsdPrompt();
 
@@ -88,6 +121,10 @@ signals:
     void audioCycleRequested();
 
 private slots:
+    // The OSC asking for the poster at the pixel size it has room for — only it
+    // knows the window's OSD resolution, and mpv's overlay-add cannot scale. See
+    // the "240mp-poster-request" client-message in onIpcReadyRead.
+    void requestPoster(int width, int height);
     void onProcessFinished();
     void tryConnectIpc();
     void onIpcReadyRead();
@@ -133,6 +170,25 @@ private:
     QString       m_inputConfPath;
     QString       m_logFilePath;
     QString       m_subInfoPath;       // JSON map: external sub URL -> friendly name (for the OSC)
+    QString       m_nowPlayingPath;    // JSON {show, title, poster} the OSC reads for its title block
+    QString       m_posterDataPath;    // raw premultiplied BGRA the OSC hands to overlay-add
+    // see setNowPlaying(); the first two are cleared by each launch, the URL is
+    // kept for as long as the session lasts because the OSC asks for it later
+    QString       m_pendingTitle;
+    QString       m_pendingShowTitle;
+    QString       m_pendingServer;
+    QString       m_pendingProfile;
+    QString       m_pendingPosterUrl;
+    QString       m_pendingRating;
+    QString       m_pendingLabel;
+    double        m_pendingPosterAspect = 0.0;
+    QString       m_posterUrl;
+    // Bumped on every launch. A poster fetch that finishes after the next file
+    // has started belongs to the file before it — autoplay swaps episodes
+    // without restarting the app — so its reply is dropped rather than putting
+    // the previous episode's art on screen.
+    quint64       m_playSession = 0;
+    QNetworkAccessManager *m_nam = nullptr;  // lazily built, only if a poster is asked for
     QString       m_lastEndFileReason;  // mpv end-file "reason" for the current session
     // Set when this session passed --start; cleared once mpv has applied it. See
     // onIpcReadyRead's playback-restart handling for why the option can't just stay set.

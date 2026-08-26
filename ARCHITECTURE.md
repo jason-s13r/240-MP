@@ -144,7 +144,7 @@ A real example (Plex) — note `requires_auth`, dynamic options, and apply slots
 | `getCustomColorScheme()` | Returns the user's custom color scheme |
 | `listDirectories(path)` / `parentDirectory(path)` / `homePath()` | Helpers for `directory_browser` |
 
-**The clock format is resolved in one place.** The app has no 12/24-hour setting of its own — the weather module owns the only `hours_format` there is — so `twelve_hour_clock()` answers for the whole app: an *enabled* module offering that setting speaks for it, 24-hour when none does. It finds that module by the setting key rather than by module id, so the id stays stated once (in `main.cpp`). `Main.qml` mirrors it as `root.twelveHour`, re-asking on any `moduleSettingChanged` for `hours_format` or `enabled`.
+**The clock format is resolved in one place.** The app has no 12/24-hour setting of its own — the weather module owns the only `hours_format` there is — so `twelve_hour_clock()` answers for the whole app: an *enabled* module offering that setting speaks for it, 24-hour when none does. It finds that module by the setting key rather than by module id, so the id stays stated once (in `main.cpp`). `Main.qml` mirrors it as `root.twelveHour`, re-asking on any `moduleSettingChanged` for `hours_format` or `enabled`; `MpvController` asks it directly to tell the OSC script how to print a time.
 
 ### Signals
 
@@ -253,6 +253,30 @@ app constants →
 ### Custom OSC (Lua)
 
 The on-screen controls mpv shows during playback are custom Lua scripts in `scripts/` (`mpv-osc.lua` for normal playback, `mpv-osc-ambient.lua` for Ambient Mode), loaded via mpv's `--script=` flag. Options are passed in with `--script-opts=` (e.g. `transcode-offset=<sec>`). The remote's key events reach these scripts through the `keypress` IPC bridge described above.
+
+#### What the OSC shows, and where the app tells it
+
+While the menu is up the script lays a **~30% black scrim** over the whole frame, so white controls are not read against a white shot. It is drawn first, and cut away over the poster: mpv draws `overlay-add` art *under* a script's ASS, so without that hole the art would be dimmed twice. `assdraw`'s `rect_cw` plus `rect_ccw` makes the hole in one path, with a 1px `C_WHITE` hairline round the art afterwards so a poster with dark edges does not bleed into the dimmed frame.
+
+The **top-left title block** answers what the seek bar never can: the bar says how far in you are, not what you are in. It is art beside two lines — the top one **what is playing** (the film, the episode as `S01E01: Magic Xylophone`, the video), the one under it **what that belongs to** (the show, the channel; nothing for a film, which names itself). Both lines are measured against the art beside them rather than against the font, so the block reads as one object.
+
+**`MpvController::setNowPlaying(title, showTitle, posterUrl, contentRating, label, posterAspect)`** feeds that block. A module calls it immediately before `loadAndPlay()`, which consumes and clears it, so a caller that sets nothing falls back to mpv's own `media-title` — right for a local file, useless for a streamed one (Plex hands out `/library/parts/…`, Jellyfin `master.m3u8`). Not for playlists: the `--force-media-title` it also sets would pin one name over every entry, which is why Local Files and Ambient Mode set nothing. Plex, Jellyfin and Emby set it again when autoplay swaps the episode under the player. **`setNowPlayingSource(server, profile)`** is the session half of it — the same `SERVER | PROFILE` strip the app keeps in its own corner, drawn beside the OSC's clock.
+
+The title and show reach the script as a **JSON file** (`nowplaying-file=<path>` in script-opts) for the same reason the subtitle names do: script-opts is one comma-separated list, and a title is exactly the kind of string that has a comma in it. A path is not.
+
+The **poster takes a round trip**, because `overlay-add` cannot scale — it draws raw premultiplied BGRA at exactly the size given, and only the script knows the window's OSD resolution:
+
+1. The script sends `script-message 240mp-poster-request <w> <h>` the first time it draws the menu (and only if the JSON said a poster exists).
+2. `MpvController` sees it as a `client-message` on the IPC socket, fetches the art through an `AppNamFactory` manager (so it is usually a cache hit on art the browse screen already pulled, and gets the `*.plex.direct` leniency), cover-crops it, fades it to 45% — premultiplied alpha means scaling all four channels is a uniform fade, and mpv's overlay has no opacity of its own — and writes it raw to a temp file.
+3. It answers `script-message 240mp-poster-ready <file> <w> <h> <stride>`; the menu redraws twice a second, so the art appears a moment later.
+
+Since art of the wrong size can only sit small or spill out, the script **checks the answer against what it currently wants** and, on a mismatch, drops it and asks again. That covers a window resized after the first request and a reply meant for the previous file arriving late; both numbers are logged (`poster request WxH`, `poster ready WxH`). `MpvController` drops a fetch that finishes after the next launch for the same reason, so autoplay cannot leave the previous episode's art on screen. The overlay draws over the video whether or not the menu is up, so it is removed on **both** teardown paths — the keypress that closes the menu and the auto-hide timer.
+
+`posterAspect` is the shape the art is drawn in, width over height: `0` keeps the 2:3 of cover art, and a module handing over something else says so (`1` for a channel avatar, `16/9` for a video thumbnail).
+
+**Track info** (`AUDIO:` / `SUBTITLE:`) sits at the **foot of the controls**, under the button row, at three-quarters the OSC's font size: a footnote to the bar, not a heading over the picture, and the corner it used to occupy is the title block's now.
+
+The **current time** sits top right, where the app's own corner clock is, so bringing the OSD up does not lose it. Right-aligned on the block's second line, under it, is one of two things and never both: the **content rating**, boxed the way a certificate card is (text in a border — those marks are trademarks, and ASS draws vectors and text, not bitmaps), or a **plain label** for a module with no certificate, which is where YouTube names the playlist a video is playing out of. All three video-server backends carry `contentRating` (Plex's `contentRating`, Jellyfin's and Emby's `OfficialRating`); `MpvController` strips the region Plex sometimes prefixes (`de/16` → `16`).
 
 ### Raspberry Pi headless hand-off (EGLFS)
 

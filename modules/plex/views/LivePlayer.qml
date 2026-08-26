@@ -88,6 +88,12 @@ FocusScope {
             livePlayerRoot.streamUrl = url
             livePlayerRoot.plexToken = plexToken
             // Live always transcodes (HLS): no separate audio/sub tracks to pick.
+            // The channel names itself on the OSD; the stream URL never would.
+            var ch = livePlayerRoot.channel
+            mpvController.setNowPlaying(ch.title || "",
+                                        ch.number ? ("CHANNEL " + ch.number) : "")
+            mpvController.setNowPlayingSource(plexBackend.get_active_server_name(),
+                                              plexBackend.get_active_user_name())
             mpvController.loadAndPlay(url, 0, 0, -1, [], [], false, -1, 0.0, plexToken)
         }
 

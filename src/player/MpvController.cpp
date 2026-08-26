@@ -4,7 +4,12 @@
 #include "../util/MpvLocator.h"
 #include "../util/DisplayHandoff.h"
 #include "../util/FontconfigOverride.h"
+#include "../net/AppNamFactory.h"
 #include <QCoreApplication>
+#include <QImage>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QGuiApplication>
 #include <QDir>
 #include <QFile>
@@ -29,6 +34,8 @@ MpvController::MpvController(const QString &appRoot, const QString &dataRoot,
     , m_inputConfPath(QDir::tempPath() + "/240mp-input.conf")
     , m_logFilePath(QDir::tempPath() + "/240mp-mpv.log")
     , m_subInfoPath(QDir::tempPath() + "/240mp-mpv-subinfo.json")
+    , m_nowPlayingPath(QDir::tempPath() + "/240mp-mpv-nowplaying.json")
+    , m_posterDataPath(QDir::tempPath() + "/240mp-mpv-poster.bgra")
 {
     m_videoProfile = detectVideoProfile();
     qInfo("[MpvController] video profile: %s",
@@ -250,6 +257,11 @@ void MpvController::loadAndPlay(const QString &url, float startSeconds,
     // --panscan would blank the video (Pi 3 overlay path, 1080p Playback ON).
     if (cropUnavailable())
         scriptOpts << QStringLiteral("hide-crop=1");
+    // The OSC prints the wall-clock time playback will finish at; it must read
+    // the same way as the clock in the app's corner, so the app resolves the
+    // 12/24-hour question once (AppCore) and the script is simply told.
+    if (m_appCore && m_appCore->twelve_hour_clock())
+        scriptOpts << QStringLiteral("clock-12h=1");
 
     // Hand the OSC a map of external sub-file URL -> friendly track name so it can show
     // the real subtitle name. mpv otherwise titles an external sub from its URL basename
@@ -271,6 +283,41 @@ void MpvController::loadAndPlay(const QString &url, float startSeconds,
             scriptOpts << QString("subinfo-file=%1").arg(m_subInfoPath);
         }
     }
+    // The OSC's title block, handed over as a file for the same reason the
+    // subtitle names are: script-opts is one comma-separated list, and a title
+    // is exactly the kind of string that contains a comma. The path itself is
+    // comma-free, so it travels in the list safely.
+    QFile::remove(m_nowPlayingPath);
+    QFile::remove(m_posterDataPath);
+    m_posterUrl = m_pendingPosterUrl;
+    ++m_playSession;
+    if (!m_pendingTitle.isEmpty() || !m_pendingShowTitle.isEmpty()
+        || !m_pendingServer.isEmpty() || !m_pendingProfile.isEmpty()) {
+        QJsonObject np{
+            {"title",  m_pendingTitle},
+            {"show",   m_pendingShowTitle},
+            {"rating", m_pendingRating},
+            // The same line as the rating, unboxed: a name, not a mark.
+            {"label",  m_pendingLabel},
+            // Shape of the art, width over height. Absent means cover art.
+            {"aspect", m_pendingPosterAspect},
+            // The corner strip, drawn beside the OSC's clock exactly as the app
+            // draws it beside its own.
+            {"server",  m_pendingServer},
+            {"profile", m_pendingProfile},
+            // Whether to bother asking for one at all — the OSC cannot know
+            // whether this module has cover art to give.
+            {"poster", !m_posterUrl.isEmpty()},
+        };
+        QFile npf(m_nowPlayingPath);
+        if (npf.open(QFile::WriteOnly | QFile::Truncate)) {
+            npf.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
+            npf.write(QJsonDocument(np).toJson(QJsonDocument::Compact));
+            npf.close();
+            scriptOpts << QString("nowplaying-file=%1").arg(m_nowPlayingPath);
+        }
+    }
+
     // Point mpv's ytdl_hook at the same user-updatable yt-dlp the app resolves,
     // so both agree on one copy even when it isn't on the global PATH (the
     // SteamOS story). Merged into the single --script-opts below — a second
@@ -284,6 +331,20 @@ void MpvController::loadAndPlay(const QString &url, float startSeconds,
     }
     if (!scriptOpts.isEmpty())
         args << QString("--script-opts=%1").arg(scriptOpts.join(QStringLiteral(",")));
+
+    // One launch, one title (see setNowPlaying) — clearing here means a caller
+    // that sets nothing falls back to mpv's own media-title instead of
+    // inheriting whatever the previous item was called.
+    if (!m_pendingTitle.isEmpty())
+        args << QString("--force-media-title=%1").arg(m_pendingTitle);
+    m_pendingTitle.clear();
+    m_pendingShowTitle.clear();
+    m_pendingPosterUrl.clear();
+    m_pendingRating.clear();
+    m_pendingLabel.clear();
+    m_pendingPosterAspect = 0.0;
+    m_pendingServer.clear();
+    m_pendingProfile.clear();
 
     if (loop)
         args << QStringLiteral("--loop-playlist=inf");
@@ -485,6 +546,94 @@ void MpvController::sendKey(const QString &key) {
     sendCommand({"keypress", key});
 }
 
+void MpvController::setNowPlaying(const QString &title, const QString &showTitle,
+                                  const QString &posterUrl,
+                                  const QString &contentRating,
+                                  const QString &label, double posterAspect) {
+    m_pendingTitle     = title;
+    m_pendingShowTitle = showTitle;
+    m_pendingPosterUrl = posterUrl;
+    // Plex region-qualifies some certificates ("de/16", "gb/15"). The OSD's box
+    // has room for the rating, not the country it was issued in.
+    m_pendingRating    = contentRating.section(QLatin1Char('/'), -1).trimmed();
+    // Never put through that: a label is free text, and one with a slash in it
+    // ("AC/DC LIVE") is a name, not a region.
+    m_pendingLabel        = label.trimmed();
+    m_pendingPosterAspect = posterAspect;
+}
+
+void MpvController::setNowPlayingSource(const QString &server, const QString &profile) {
+    m_pendingServer  = server;
+    m_pendingProfile = profile;
+}
+
+void MpvController::requestPoster(int width, int height) {
+    // Only the OSC knows how big the poster can be — the window's OSD resolution
+    // is its business, and overlay-add takes the bitmap at exactly the size it
+    // will be drawn. The bounds are a sanity check on a value that arrives over
+    // IPC, not a layout decision.
+    if (m_posterUrl.isEmpty() || width < 8 || height < 8
+        || width > 1024 || height > 1024)
+        return;
+
+    if (!m_nam) {
+        // The same manager QML's poster images use: a disk cache (so this is
+        // usually a local read of art the browse screen already fetched) and the
+        // narrow *.plex.direct certificate leniency, without which the fetch
+        // fails on RPi OS Lite's incomplete CA bundle.
+        AppNamFactory factory(m_dataRoot);
+        m_nam = factory.create(this);
+    }
+
+    QNetworkRequest req{QUrl(m_posterUrl)};
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+    const quint64 session = m_playSession;
+    QNetworkReply *reply = m_nam->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, width, height, session]() {
+        reply->deleteLater();
+        // A different file is playing by the time this landed — see m_playSession.
+        if (session != m_playSession) return;
+        QImage img;
+        if (reply->error() != QNetworkReply::NoError
+            || !img.loadFromData(reply->readAll()))
+            return;
+
+        // Cover-crop to the box the OSC asked for, so cover art of any shape
+        // fills it without being squashed.
+        const QImage scaled = img.scaled(width, height, Qt::KeepAspectRatioByExpanding,
+                                          Qt::SmoothTransformation);
+        QImage out = scaled.copy((scaled.width()  - width)  / 2,
+                                 (scaled.height() - height) / 2, width, height)
+                           .convertToFormat(QImage::Format_ARGB32_Premultiplied);
+
+        // Faded here rather than by the OSC: mpv's overlay has no opacity of its
+        // own, and the poster is a backdrop for the title beside it, not a second
+        // thing competing for attention. Premultiplied alpha means scaling all
+        // four channels by the same factor is exactly a uniform fade.
+        constexpr double kOpacity = 0.75;
+        for (int y = 0; y < out.height(); ++y) {
+            uchar *line = out.scanLine(y);
+            for (int i = 0, n = out.width() * 4; i < n; ++i)
+                line[i] = uchar(line[i] * kOpacity);
+        }
+
+        // Format_ARGB32_Premultiplied is 0xAARRGGBB in a quint32, which on a
+        // little-endian machine (both targets) is the byte order mpv calls "bgra".
+        QFile f(m_posterDataPath);
+        if (!f.open(QFile::WriteOnly | QFile::Truncate)) return;
+        f.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
+        for (int y = 0; y < out.height(); ++y)
+            f.write(reinterpret_cast<const char *>(out.constScanLine(y)),
+                    out.bytesPerLine());
+        f.close();
+
+        sendCommand({"script-message", "240mp-poster-ready", m_posterDataPath,
+                     QString::number(width), QString::number(height),
+                     QString::number(out.bytesPerLine())});
+    });
+}
+
 void MpvController::showOsdSkipPrompt() {
     sendCommand({"script-message", "skip-overlay-state", "1"});
     sendCommand({"keypress", "DOWN"});
@@ -536,6 +685,9 @@ void MpvController::onIpcReadyRead() {
                         emit subtitleCycleRequested();
                     else if (msg == "cycle-audio")
                         emit audioCycleRequested();
+                    else if (msg == "240mp-poster-request" && args.size() >= 3)
+                        requestPoster(args[1].toString().toInt(),
+                                      args[2].toString().toInt());
                 }
             }
             continue;

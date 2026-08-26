@@ -16,6 +16,13 @@ FocusScope {
     property string seriesId:       navParams.seriesId       || ""
     property string mediaSourceId:  navParams.mediaSourceId  || itemId
     property string itemTitle:      navParams.title          || ""
+    // Enough of an episode's place in its show to name it on mpv's OSD. A plain
+    // property, because autoplay swaps the episode under the player without
+    // navigating (see advanceToEpisode).
+    property string showTitle:      navParams.grandparentTitle || ""
+    // Certificate for the OSD, which prints it under the clock; blank means
+    // that corner stays empty.
+    property string contentRating:  navParams.contentRating   || ""
     property int    viewOffset:     navParams.viewOffset     || 0
     property int    parentIndex:    navParams.parentIndex    || 0
     property int    index:          navParams.index          || 0
@@ -25,6 +32,18 @@ FocusScope {
     property string selectedSubtitleId: navParams.selectedSubtitleId || ""
 
     property bool isTranscoding: streamUrl.indexOf("master.m3u8") >= 0
+
+    // The top line of mpv's OSD title block: what this one item is. An episode
+    // carries its SxxEyy, because an episode name on its own says nothing about
+    // which one it is. The show goes on the line beneath it (showTitle), so it
+    // is not repeated here. No poster: this module has no poster_url yet.
+    function _pad2(n) { return n < 10 ? "0" + n : "" + n }
+    readonly property string osdTitle: {
+        var sxe = (showTitle && parentIndex > 0 && index > 0)
+                  ? "S" + _pad2(parentIndex) + "E" + _pad2(index) : ""
+        if (!sxe) return itemTitle
+        return itemTitle ? (sxe + ": " + itemTitle) : sxe
+    }
 
     // Autoplay next episode
     property bool   autoplayNext:       false
@@ -259,6 +278,8 @@ FocusScope {
         itemId         = detail.itemId         || ""
         mediaSourceId  = detail.mediaSourceId  || detail.itemId || ""
         itemTitle      = detail.title          || ""
+        showTitle      = detail.grandparentTitle || ""
+        contentRating  = detail.contentRating    || ""
         audioStreams   = detail.audioStreams   || []
         subtitleStreams= detail.subtitleStreams|| []
         seriesId       = detail.seriesId       || ""
@@ -384,6 +405,9 @@ FocusScope {
     }
 
     function doStartPlayback(offsetMs) {
+        // Set immediately before the launch that consumes it — a stream URL is
+        // master.m3u8 or an opaque /Videos/... path, so mpv has no name of its own.
+        mpvController.setNowPlaying(osdTitle, showTitle, "", contentRating)
         var jfToken = jellyfinBackend.get_access_token()
         if (isTranscoding) {
             // The HLS manifest bakes in the selected audio, and the chosen subtitle

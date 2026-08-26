@@ -11,6 +11,38 @@ FocusScope {
     property string videoUrl: item.url || ""
     property string videoId:  item.videoId || ""
 
+    // ── mpv's OSD title block ──────────────────────────────────────
+    // The channel goes on the heading line and the video's own title on the
+    // line above the seek bar — the same two lines a Plex episode fills with
+    // its show and its SxxEyy. The playlist, when the video is being played out
+    // of one, takes the line under the channel, unboxed: it is a name, not a
+    // certificate, and nothing else on that screen would say which list this is
+    // playing from.
+    property string channelName:  item.channelName || ""
+    property string videoTitle:   item.title || ""
+    property string playlistName: navParams.playlistName || ""
+
+    // Art for that block: the channel's avatar, the same choice Plex makes in
+    // giving an episode its show's poster rather than its own still. Asked for
+    // by ID *and* name, because the lists a video is most often played from —
+    // Watch Later, History, a playlist — carry only the name, and asking by ID
+    // alone is what left those playing with a video thumbnail instead of a
+    // channel. 256 so the OSC's box, which is sized from the window and asks at
+    // its own pixel size, scales down to it.
+    readonly property string channelArt:
+        youtubeBackend ? youtubeBackend.channel_art_for(item.channelId || "",
+                                                        item.channelName || "", 256)
+                       : ""
+    // The video's own thumbnail only as a last resort — a channel nothing in
+    // this app has ever listed (an unsubscribed one, reached through a
+    // playlist) has no avatar to show, and a still beats an empty block.
+    readonly property string osdPoster:
+        channelArt !== "" ? channelArt
+                          : (youtubeBackend ? youtubeBackend.video_thumb_url(videoId) : "")
+    // Neither of those is cover art, and the OSD's 2:3 default would crop most
+    // of either away: an avatar is square and a thumbnail is 16:9.
+    readonly property real osdPosterAspect: channelArt !== "" ? 1.0 : 16 / 9
+
     property bool   overlayVisible:   false
     property bool   playbackStarted:  false
     property int    savedPositionMs:  0
@@ -28,6 +60,12 @@ FocusScope {
     function doPlay(startMs) {
         overlayVisible = false
         lastStartMs = startMs
+        // Set immediately before the launch that consumes it: mpv is handed a
+        // watch URL for yt-dlp to resolve, so it has no name of its own to show.
+        // No certificate on a YouTube video, so the playlist goes through as the
+        // plain label that line also takes.
+        mpvController.setNowPlaying(videoTitle, channelName, osdPoster, "",
+                                    playlistName, osdPosterAspect)
         mpvController.loadAndPlay(videoUrl, startMs / 1000.0, 0, -2, [], [], false, -1, 0.0, "", false, "", false, [], 0.0, false, ytdlArgs)
     }
 
