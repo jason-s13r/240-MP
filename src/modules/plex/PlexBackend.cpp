@@ -2678,6 +2678,9 @@ void PlexBackend::load_live_channels() {
                         {"channelId", id},
                         {"number",    number},
                         {"title",     name.toUpper()},
+                        // The station's logo, where the EPG carries one.
+                        // Resolved to a URL by live_channel_logo_url().
+                        {"thumb",     c["thumb"].toString()},
                     });
                 }
                 if (channels.isEmpty())
@@ -2686,6 +2689,31 @@ void PlexBackend::load_live_channels() {
             });
         });
     });
+}
+
+QString PlexBackend::live_channel_logo_url(const QVariantMap &channel) const {
+    const QString thumb = channel.value("thumb").toString();
+    if (thumb.isEmpty()) return {};
+
+    // The EPG provider serves most station logos from its own host, already
+    // absolute and needing no token of ours.
+    if (thumb.startsWith(QLatin1String("http://"))
+        || thumb.startsWith(QLatin1String("https://")))
+        return thumb;
+
+    const QString base = serverUrl();
+    if (base.isEmpty()) return {};
+
+    // Server-relative, and fetched raw rather than through /photo/:/transcode
+    // the way cover art is: a station logo is a transparent PNG of a few KB,
+    // and the transcoder would flatten that transparency onto black — wrong
+    // under the light themes. Nothing large is held either way, since the cell
+    // bounds the decode with sourceSize.
+    QUrl url(base + (thumb.startsWith(QLatin1Char('/')) ? thumb : QStringLiteral("/") + thumb));
+    QUrlQuery q(url.query());
+    q.addQueryItem(QStringLiteral("X-Plex-Token"), serverToken());
+    url.setQuery(q);
+    return url.toString();
 }
 
 void PlexBackend::tune_channel(const QString &channelId, const QString &sessionId) {

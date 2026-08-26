@@ -25,6 +25,11 @@ FocusScope {
     // Optional caption for wide cells only, same rule. Returns
     // { top, bottom, corner }, or null for an item with nothing to say.
     property var captionSource: null
+    // A short label for the foot of every cell, whatever its shape — the Plex
+    // live lineup's channel number. Ungated, unlike the two above: a number
+    // identifies the cell rather than describing artwork a portrait cover is
+    // already showing, so a square cell wants it just as much as a wide one.
+    property var cornerTagSource: null
 
     // Fallback shape, used when the host offers no per-item rule.
     property real posterAspect: 2 / 3
@@ -36,6 +41,10 @@ FocusScope {
     // Off inside a sectioned view, where one shared line at the bottom carries
     // the selection instead of repeating under every shelf.
     property bool showTitleLine: true
+
+    // A shelf of logos rather than cover art — the Plex live lineup's station
+    // marks. See PosterCell.logoArt.
+    property bool logoArt: false
 
     // Whether this shelf's selection is the one the user is on. A host driving
     // the shelf from outside — keeping focus and calling moveLeft/moveRight —
@@ -79,6 +88,10 @@ FocusScope {
     // The caption follows the badge exactly.
     function captionFor(item) {
         return (captionSource && aspectFor(item) > 1) ? captionSource(item) : null
+    }
+
+    function cornerTagFor(item) {
+        return cornerTagSource ? cornerTagSource(item) : ""
     }
 
     readonly property var currentItemData:
@@ -160,6 +173,7 @@ FocusScope {
             posterH: shelfRoot.posterH
             frameW: shelfRoot.frameW
             selected: row.currentIndex === index && shelfRoot.highlighted
+            logoArt: shelfRoot.logoArt
             // Asked for at this cell's own width, so the server returns art of
             // exactly the cell's shape and the crop removes nothing.
             art: shelfRoot.posterSource(modelData, posterW, posterH)
@@ -170,6 +184,8 @@ FocusScope {
             title: shelfRoot.titleText(modelData)
 
             readonly property var caption: shelfRoot.captionFor(modelData)
+            cornerTagLabel: shelfRoot.cornerTagFor(modelData)
+
             captionTop: caption ? (caption.top || "") : ""
             captionBottom: caption ? (caption.bottom || "") : ""
             cornerLabel: caption ? (caption.corner || "") : ""

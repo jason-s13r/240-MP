@@ -29,6 +29,30 @@ Item {
     // A short label at the end of the bottom line — a runtime. That line gives
     // up the width it takes, so the two never meet.
     property string cornerLabel: ""
+    // A label that identifies the cell rather than describing it — the live
+    // lineup's channel number, along the bottom from the same corner the
+    // runtime reads from. Its own property and not the end of a caption line,
+    // because the cells that want it are square and small, with no room for a
+    // line of caption to run beside it. It shares that corner with cornerLabel:
+    // a host sets one or the other, never both.
+    property string cornerTagLabel: ""
+
+    // The artwork is a logo rather than cover art — a station's mark, drawn on
+    // whatever canvas the broadcaster chose and meaning nothing with its ends
+    // cropped off. Fitted whole instead of cropped to fill, and held off the
+    // cell's edges, so the cell reads as a box with a mark in it rather than as
+    // a picture that happens to stop at the border — which is what a row of
+    // them cropped to fill reads as, one continuous band. The overlays keep the
+    // cell's real corners: a channel number sits in the margin the mark gives up.
+    property bool logoArt: false
+    readonly property real logoInset: logoArt ? posterH * 0.125 : 0
+    // A mark is as often black on transparent as white, and the app's own
+    // background is black in every theme but one — so a logo cell is backed a
+    // shade off it rather than left to sit on it. A neutral veil over whatever
+    // the surface is, not a colour of its own: it lifts a black surface to a
+    // dark grey and settles a light one, and no theme has to name it.
+    readonly property color logoBackdrop:
+        Qt.tint(root.surfaceColor, Qt.rgba(0.5, 0.5, 0.5, 0.18))
 
     property real posterW: 0
     property real posterH: 0
@@ -41,6 +65,15 @@ Item {
     // Fixed, not derived from the corner art, so caption lines land in the same
     // place on every cell in a row whatever is beside them.
     readonly property real captionLineH: posterH / 8
+    // Floored at the size the app's small labels run at: an eighth of a 64px
+    // channel square is a 6px digit, and a number that cannot be read is not
+    // worth the corner it sits in.
+    readonly property real cornerTagLineH: Math.max(captionLineH, root.sh * 0.025) //12
+    // Held further off its corner than the caption lines are off theirs. Those
+    // lie over photography that runs to the cell's edge, where a pixel is all
+    // it takes to stop reading as cut off; this one sits inside a bordered
+    // card, and a pixel would leave it touching the card's own rule.
+    readonly property real cornerTagInset: root.sh * 0.0104167 //5
 
     // Past twice as tall as it is wide there is no width left to read a word
     // across, so a placeholder title takes a quarter turn and is read up the
@@ -79,28 +112,44 @@ Item {
         width: posterCell.posterW
         height: posterCell.posterH
 
+        // Under the mark, and only under a mark: the same bordered card the
+        // placeholder below draws, so a channel with a logo and one without are
+        // framed alike. The placeholder covers this when there is no art.
+        Rectangle {
+            anchors.fill: parent
+            visible: posterCell.logoArt
+            color: posterCell.logoBackdrop
+            border.color: root.tertiaryColor
+            border.width: root.sh * 0.003125 //2
+        }
+
         // Filled, not fitted: scaled until it covers the cell, overflow clipped
         // centred. The host normally has the server crop to this size already,
-        // so this is the backstop for art that arrives off-ratio anyway.
+        // so this is the backstop for art that arrives off-ratio anyway. A logo
+        // is the exception both ways — see logoArt.
         Image {
             id: poster
             anchors.fill: parent
+            anchors.margins: posterCell.logoInset
             source: posterCell.art
             asynchronous: true
             cache: true
-            fillMode: Image.PreserveAspectCrop
+            fillMode: posterCell.logoArt ? Image.PreserveAspectFit
+                                         : Image.PreserveAspectCrop
             clip: true
-            sourceSize.width: posterCell.posterW
-            sourceSize.height: posterCell.posterH
+            sourceSize.width: posterCell.posterW - posterCell.logoInset * 2
+            sourceSize.height: posterCell.posterH - posterCell.logoInset * 2
             visible: status === Image.Ready
         }
 
         // No art, or the fetch failed: a bordered card carrying the title,
-        // never a broken-image box.
+        // never a broken-image box. On a logo cell it takes the backdrop's
+        // shade, so a channel whose mark never arrived sits at the same weight
+        // as the ones beside it rather than as a hole in the row.
         Rectangle {
             anchors.fill: parent
             visible: !poster.visible
-            color: root.surfaceColor
+            color: posterCell.logoArt ? posterCell.logoBackdrop : root.surfaceColor
             border.color: root.tertiaryColor
             border.width: root.sh * 0.003125 //2
 
@@ -192,17 +241,32 @@ Item {
             text: posterCell.captionTop
         }
 
+        // The foot of the cell, at the same corner the runtime reads from — the
+        // channel number under its station logo.
+        OverlayText {
+            id: cornerTagText
+            visible: posterCell.cornerTagLabel !== "" && poster.visible
+            text: posterCell.cornerTagLabel
+            anchors.right: parent.right
+            anchors.rightMargin: posterCell.cornerTagInset
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: posterCell.cornerTagInset
+            height: posterCell.cornerTagLineH
+        }
+
         // Along the bottom, from wherever the corner art leaves off, stopping
         // short of the label at the far end.
         OverlayText {
             visible: posterCell.captionBottom !== "" && poster.visible
             anchors.left: badge.visible ? badge.right : parent.left
             anchors.leftMargin: posterCell.inset
-            anchors.right: cornerText.visible ? cornerText.left : parent.right
+            anchors.right: cornerText.visible    ? cornerText.left
+                         : cornerTagText.visible ? cornerTagText.left
+                                                 : parent.right
             // Twice the inset where two runs of text meet: one pixel between
             // letterforms does not read as a gap.
-            anchors.rightMargin: cornerText.visible ? posterCell.inset * 2
-                                                    : posterCell.inset
+            anchors.rightMargin: (cornerText.visible || cornerTagText.visible)
+                                 ? posterCell.inset * 2 : posterCell.inset
             anchors.bottom: parent.bottom
             anchors.bottomMargin: posterCell.inset
             height: posterCell.captionLineH

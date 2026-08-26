@@ -3,7 +3,8 @@ import Components
 
 // Main Plex home screen: the library menu. With cover art on, each library is a
 // shelf carrying its own menu as a row of tiles — the whole of Library.qml's
-// intermediate menu, so that view is simply never reached in this mode.
+// intermediate menu, so that view is simply never reached in this mode — and
+// LIVE TV is a shelf of the DVR lineup, one square station logo per channel.
 FocusScope {
     id: browseRoot
 
@@ -22,39 +23,62 @@ FocusScope {
     property string errorMsg: ""
 
     // What each library actually has, so no tile opens on NO ITEMS FOUND. Three
-    // requests per library (check_section_capabilities) plus one Continue
-    // Watching fetch for all of them. The menu waits on the lot: tiles that
-    // appear and vanish under the selection are worse than a moment of LOADING.
+    // requests per library (check_section_capabilities), one Continue Watching
+    // fetch for all of them, and the channel lineup where there is a DVR. The
+    // menu waits on the lot: tiles that appear and vanish under the selection
+    // are worse than a moment of LOADING.
     property var caps: ({})       // sectionId -> { recommended, collections, playlists }
     property var cwItems: ({})    // sectionId -> the items in progress in it
+    // The DVR's channel lineup, when the server has one. Held here because LIVE
+    // TV is a shelf of its channels in poster mode, the way a library is a shelf
+    // of its own menu — see navEntries.
+    property var liveChannels: []
     property int capsPending: 0
     property bool cwPending: false
+    property bool livePending: false
     property bool menuResolved: false
 
     readonly property bool menuReady: libraries.length > 0
                                       && (!root.posterGrid || menuResolved)
     readonly property bool posterMenu: root.posterGrid && menuResolved
 
+    // A live channel, as opposed to a library item or a menu tile: it comes off
+    // the DVR lineup and carries none of an item's fields.
+    function isChannel(item) { return item !== null && item !== undefined
+                                      && item.channelId !== undefined }
+
     // The artwork rule lives in PlexBackend::poster_url; tiles carry none, so
-    // this returns "" for them and PosterCell draws its titled card instead.
+    // this returns "" for them and PosterCell draws its titled card instead. A
+    // channel's logo is the EPG's, not the library's, and comes from its own
+    // resolver — empty for a station the guide has no mark for, which draws the
+    // same titled card and is why text alone still reads.
     function posterFor(item, w, h) {
         if (!item || item.nav !== undefined) return ""
+        if (isChannel(item)) return plexBackend.live_channel_logo_url(item)
         return plexBackend.poster_url(item, Math.round(w), Math.round(h), "shelf")
     }
 
-    // A tile has no badge either — posterFor already gave it none.
+    // A tile has no badge either — posterFor already gave it none — and neither
+    // has a channel: a logo is already the whole of what the cell is saying.
     function badgeFor(item, w, h) {
-        if (!item || item.nav !== undefined) return ""
+        if (!item || item.nav !== undefined || isChannel(item)) return ""
         return plexBackend.poster_url(item, Math.round(w), Math.round(h), "badge")
     }
 
     // The episode and show names, and the runtime, a 16:9 still cannot give. A
     // tile has none of them, and the shelf only asks on landscape cells anyway.
     function captionFor(item) {
-        if (!item || item.nav !== undefined) return null
+        if (!item || item.nav !== undefined || isChannel(item)) return null
         return { top:    item.title || "",
                  bottom: item.grandparentTitle || "",
                  corner: item.durationDisplay || "" }
+    }
+
+    // The channel number, in the corner of the logo it belongs to. The title
+    // line at the foot of the screen names one channel at a time, and a lineup
+    // is walked by number — so the numbers belong on the cells, together.
+    function cornerTagFor(item) {
+        return isChannel(item) ? (item.number || "") : ""
     }
 
     // The card at the front of every shelf is a spine, not a poster: it is the
@@ -65,7 +89,9 @@ FocusScope {
     // Only that one card. The rest of a library's menu leads to a corner of it,
     // and those stay plain portrait cards wide enough to read RECOMMENDED.
     readonly property real spinePosterW: root.sh * 0.0375 //18
-    function isSpine(item) { return item && item.nav === "library_all" }
+    function isSpine(item) {
+        return item && (item.nav === "library_all" || item.nav === "live_all")
+    }
 
     // Tiles are always portrait, whatever shape the art beside them is: matched
     // to a TV shelf's 16:9 stills, five of them would eat the row before a
@@ -74,7 +100,16 @@ FocusScope {
     // wide at that height.
     function aspectFor(item) {
         if (!item) return 2 / 3
-        if (isSpine(item)) return (shelfPosterH > 0) ? spinePosterW / shelfPosterH : 2 / 3
+        // A spine is one width whatever it leads, so it is measured against the
+        // height of its own shelf — the live row is the shorter of the two.
+        if (isSpine(item)) {
+            var h = (item.nav === "live_all") ? livePosterH : shelfPosterH
+            return (h > 0) ? spinePosterW / h : 2 / 3
+        }
+        // Square, the way a YouTube channel's avatar is: a station logo is a
+        // mark rather than cover art, and every one of them a different shape —
+        // one box for the lot, each logo fitted whole inside it.
+        if (isChannel(item)) return 1
         return (item.nav !== undefined) ? 2 / 3
                                         : plexBackend.poster_aspect(item, "shelf")
     }
@@ -103,17 +138,30 @@ FocusScope {
         return out.concat(cwItems[lib.sectionId] || [])
     }
 
+    // The LIVE TV shelf: the same spine every library shelf leads with — here it
+    // opens the full channel list, which is what the row was before it had one —
+    // and then the lineup, one square logo per channel.
+    function liveTiles(lib) {
+        return [{ nav: "live_all", title: "VIEW ALL", label: lib.title }]
+               .concat(liveChannels)
+    }
 
-    // One flat column of entries. Each real library is a shelf holding its menu;
-    // the synthetic rows — the all-libraries Continue Watching list, LIVE TV —
-    // have no menu of their own and stay nav rows. Tiles carry no artwork, so
-    // PosterCell draws them as its bordered titled cards.
+
+    // One flat column of entries. Each real library is a shelf holding its menu,
+    // and LIVE TV is a shelf of the lineup — the one synthetic entry with
+    // something of its own to put on a row. The all-libraries Continue Watching
+    // list has no such thing and stays a nav row, as does LIVE TV on a server
+    // whose lineup came back empty. Tiles carry no artwork, so PosterCell draws
+    // them as its bordered titled cards.
     readonly property var navEntries: {
         var out = []
         for (var i = 0; i < libraries.length; i++) {
             var lib = libraries[i]
             if (posterMenu && lib.sectionId)
                 out.push({ kind: "shelf", title: lib.title, lib: lib, items: tilesFor(lib) })
+            else if (posterMenu && lib.key === "live_tv" && liveChannels.length > 0)
+                out.push({ kind: "shelf", title: lib.title, lib: lib,
+                           items: liveTiles(lib), live: true })
             else
                 out.push({ kind: "row", title: lib.title, lib: lib })
         }
@@ -145,6 +193,13 @@ FocusScope {
     readonly property real shelfGutter: root.sh * 0.0125 //6 — PosterShelf's frameW * 2
     readonly property real shelfPosterH: root.sh * 0.15625 //75
     readonly property real shelfEntryH: shelfPosterH + shelfGutter //81
+    // One cover's width across, and square — so the live row measures the same
+    // step as every other row on the screen instead of running wider than the
+    // posters above and below it. A station logo stays recognisable that small,
+    // the way a YouTube channel's avatar does, and the height the shorter row
+    // gives back buys more of the menu.
+    readonly property real livePosterH: shelfPosterH * 2 / 3 //50
+    readonly property real liveEntryH: livePosterH + shelfGutter //56
 
     function entryAt(i) {
         return (i >= 0 && i < navEntries.length) ? navEntries[i] : null
@@ -186,7 +241,7 @@ FocusScope {
     // Builds the menu once every probe has answered. Called after each one and
     // once up front, so a server with nothing to probe does not wait at all.
     function resolveMenu() {
-        if (menuResolved || capsPending > 0 || cwPending) return
+        if (menuResolved || capsPending > 0 || cwPending || livePending) return
         probeTimeout.stop()
         menuResolved = true
         restoreSelection()
@@ -209,6 +264,9 @@ FocusScope {
     function tileTitle(item) {
         if (!item) return ""
         if (item.nav !== undefined) return item.label || item.title || ""
+        // A channel reads as it does in the full list: its number, then its name.
+        if (isChannel(item))
+            return (item.number ? item.number + "  " : "") + (item.title || "")
         if (item.type === "episode" && item.grandparentTitle) {
             var sNum = (item.parentIndex != null) ? item.parentIndex : "?"
             var eNum = (item.index != null) ? item.index : "?"
@@ -225,6 +283,9 @@ FocusScope {
         // The one cell whose name is not what it is but where it goes.
         if (isSpine(item)) return "VIEW ALL " + tileTitle(item)
         if (item.nav !== undefined) return tileTitle(item)
+        // Named for what Return does with it, the way Continue is below: a logo
+        // sitting on a menu row otherwise says nothing about being playable.
+        if (isChannel(item)) return "Watch: " + tileTitle(item)
         return "Continue: " + tileTitle(item)
     }
 
@@ -243,8 +304,17 @@ FocusScope {
     // A shelf holds both, so Return lands here first.
     function openShelfItem(lib, item) {
         if (!lib || !item) return
-        if (item.nav !== undefined) openTile(lib, item)
+        // A channel is watched straight off the shelf; its spine falls through to
+        // openLibrary, which is the LiveChannels list this row used to open.
+        if (isChannel(item)) openLiveChannel(item)
+        else if (item.nav === "live_all") openLibrary(lib)
+        else if (item.nav !== undefined) openTile(lib, item)
         else openMedia(lib, item)
+    }
+
+    function openLiveChannel(channel) {
+        browseRoot.navigateTo("LivePlayer.qml", { channel: channel },
+                              browseRoot.listState())
     }
 
     // The same three destinations Items.qml picks between. Continue Watching is
@@ -292,17 +362,24 @@ FocusScope {
             // and the menu is built when the last one answers.
             browseRoot.caps = ({})
             browseRoot.cwItems = ({})
+            browseRoot.liveChannels = []
             browseRoot.capsPending = 0
             browseRoot.cwPending = false
+            browseRoot.livePending = false
             for (var i = 0; i < items.length; i++) {
                 if (items[i].sectionId) {
                     browseRoot.capsPending++
                     plexBackend.check_section_capabilities(items[i].sectionId)
                 } else if (items[i].key === "continue_watching") {
                     browseRoot.cwPending = true
+                } else if (items[i].key === "live_tv") {
+                    browseRoot.livePending = true
                 }
             }
             if (browseRoot.cwPending) plexBackend.load_continue_watching()
+            // Only when the server actually has a DVR — load_libraries has
+            // already established that by the time the row is in the list.
+            if (browseRoot.livePending) plexBackend.load_live_channels()
             probeTimeout.restart()
             browseRoot.resolveMenu()
         }
@@ -332,6 +409,12 @@ FocusScope {
             browseRoot.resolveMenu()
         }
 
+        function onLiveChannelsLoaded(items) {
+            browseRoot.liveChannels = items
+            browseRoot.livePending = false
+            browseRoot.resolveMenu()
+        }
+
         function onErrorOccurred(msg) {
             console.log("[Library] Error: " + msg)
             // The libraries are already up, so this is a probe failing behind
@@ -339,6 +422,7 @@ FocusScope {
             // than covering a working screen with an error.
             if (browseRoot.libraries.length > 0 && !browseRoot.menuResolved) {
                 browseRoot.cwPending = false
+                browseRoot.livePending = false
                 browseRoot.capsPending = 0
                 browseRoot.resolveMenu()
                 return
@@ -367,6 +451,7 @@ FocusScope {
         onTriggered: {
             browseRoot.capsPending = 0
             browseRoot.cwPending = false
+            browseRoot.livePending = false
             browseRoot.resolveMenu()
         }
     }
@@ -481,10 +566,14 @@ FocusScope {
             model: entry.items || []
             highlighted: navList.currentIndex === entryIndex
             showTitleLine: false
+            // Station logos are fitted whole inside their squares; cover art is
+            // cropped to fill its cell.
+            logoArt: entry.live === true
 
             posterSource: browseRoot.posterFor
             badgeSource: browseRoot.badgeFor
             captionSource: browseRoot.captionFor
+            cornerTagSource: browseRoot.cornerTagFor
             titleText: browseRoot.tileTitle
             posterAspectFor: browseRoot.aspectFor
 
@@ -567,7 +656,9 @@ FocusScope {
             readonly property int entryIndex: index
 
             width: navList.width
-            height: entry.kind === "shelf" ? browseRoot.shelfEntryH : browseRoot.rowH
+            height: entry.kind !== "shelf" ? browseRoot.rowH
+                  : entry.live                ? browseRoot.liveEntryH
+                                              : browseRoot.shelfEntryH
             sourceComponent: entry.kind === "shelf" ? shelfComponent : rowComponent
         }
     }

@@ -118,6 +118,10 @@ public:
     // update_live_timeline keeps that tuner alive (state "playing") or releases it
     // (state "stopped"). The grabbed media key is remembered between calls.
     Q_INVOKABLE void load_live_channels();
+    // Logo for one channel of that lineup, or empty when the EPG has none —
+    // callers fall back to the channel's name. Takes the channel map rather
+    // than a thumb string, matching poster_url.
+    Q_INVOKABLE QString live_channel_logo_url(const QVariantMap &channel) const;
     Q_INVOKABLE void tune_channel(const QString &channelId, const QString &sessionId);
     Q_INVOKABLE void update_live_timeline(const QString &state);
     // Stops the live transcode for sessionId and forgets the tuned key, so the
