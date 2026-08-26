@@ -153,6 +153,19 @@ Window {
         }
     }
 
+    // The startup module, entered once the settings above have been applied.
+    function navigateToStartupModule() {
+        var entryPoint = appCore.startupModuleEntryPoint()
+        if (!entryPoint)
+            return
+        root.appNavStack.push({
+            source: moduleLoader.source,
+            params: root.appCurrentParams,
+            listState: {}
+        })
+        moduleLoader.setSource(entryPoint, { "navParams": { fromAppStartup: true } })
+    }
+
     Component.onCompleted: {
         var cfg = appCore.get_settings()
 
@@ -303,15 +316,13 @@ Window {
             item.forceActiveFocus()
             if (!root._startupNavigated) {
                 root._startupNavigated = true
-                var entryPoint = appCore.startupModuleEntryPoint()
-                if (entryPoint) {
-                    root.appNavStack.push({
-                        source: moduleLoader.source,
-                        params: root.appCurrentParams,
-                        listState: {}
-                    })
-                    moduleLoader.setSource(entryPoint, { "navParams": { fromAppStartup: true } })
-                }
+                // Deferred a tick: this fires while the window is still being
+                // built, and the app settings — poster_grid, the theme, the
+                // 12/24-hour clock — are seeded in the root's own
+                // Component.onCompleted, which QML runs only after every child
+                // has completed. A module booted straight into would otherwise
+                // read every one of them at its default.
+                Qt.callLater(root.navigateToStartupModule)
             }
         }
 
