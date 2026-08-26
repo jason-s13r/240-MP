@@ -61,6 +61,20 @@ FocusScope {
         return item.editionTitle ? base + " (" + item.editionTitle + ")" : base
     }
 
+    // Poster art. The image loads whenever the feature is on; showPoster only
+    // flips once it is actually decoded, so a server with no art (or a failed
+    // fetch) leaves the original full-width layout untouched rather than a hole.
+    readonly property string posterUrl: root.posterGrid
+        ? plexBackend.poster_url(detail || item, root.sw * 0.1875, root.sh * 0.25, "detail") : ""
+    readonly property bool showPoster: posterImage.status === Image.Ready
+
+    // With a poster in the left column the playback-settings section no longer
+    // fits beneath the details row, so it moves alongside — to the right of the
+    // poster, under the summary. Both branches of each are today's values.
+    readonly property real sectionX: showPoster ? root.sw * 0.209375 : 0 //144 : 0
+    readonly property real sectionW: showPoster ? root.sw * 0.54375   //348
+                                                : root.sw * 0.76875   //492
+
     // Focus rows: 0=play button, 1=extras (when hasExtras), 4=write NFC card
     // (when a reader is present), 2=audio, 3=subtitles.
     //
@@ -210,6 +224,9 @@ FocusScope {
 
     Keys.onUpPressed: {
         if (isLaunching) return
+        // Row 0 is the top of this screen; above it is the SERVER | PROFILE line
+        // in the corner, when there is one. Otherwise the rows wrap as before.
+        if (focusRow === 0 && moduleRoot.focusStatus()) return
         stepFocus(-1)
     }
     Keys.onDownPressed: {
@@ -315,19 +332,54 @@ FocusScope {
         visible: detail !== null
         anchors.top: parent.top
         anchors.left: parent.left
-        anchors.topMargin: root.sh * 0.25 //120
+        // A poster stacked over the buttons needs more column than the text
+        // layout ever did, and there is dead space to take it from: the AppBar
+        // ends at y84 and the hint row does not start until y414.
+        anchors.topMargin: detailRoot.showPoster ? root.sh * 0.2166667 //104
+                                         : root.sh * 0.25      //120
         anchors.leftMargin: root.sw * 0.115625 //74
         width: root.sw * 0.76875 //492
-        height: root.sh * 0.525 //252
+        height: detailRoot.showPoster ? root.sh * 0.6104167 //293
+                              : root.sh * 0.525     //252
         clip: true
 
         Row {
             id: itemDetails
-            height: root.sh * 0.35 //168
+            height: detailRoot.showPoster ? root.sh * 0.4833333 //232
+                                          : root.sh * 0.35      //168
             spacing: root.sw * 0.0375 //24
 
             Column {
                 width: root.sw * 0.1875 //120
+
+                // Poster, above the action buttons. The wrapper carries the 8px
+                // gap and collapses to nothing when hidden — a Column skips
+                // invisible children, so the button stack is unmoved with the
+                // feature off.
+                Item {
+                    visible: detailRoot.showPoster
+                    width: parent.width
+                    height: posterImage.height + root.sh * 0.0166667 //8 gap
+
+                    Image {
+                        id: posterImage
+                        source: detailRoot.posterUrl
+                        asynchronous: true
+                        cache: true
+                        // Fitted, not cropped, and sized from what came back —
+                        // a 2:3 poster stands tall, a 16:9 episode still is wide.
+                        // Clamped to the button column either way, so a wide
+                        // still can never spill into the summary beside it.
+                        fillMode: Image.PreserveAspectFit
+                        sourceSize.width: root.sw * 0.1875 //120
+                        sourceSize.height: root.sh * 0.25  //120
+                        width: Math.min(implicitWidth, parent.width)
+                        height: implicitWidth > 0
+                                ? width * implicitHeight / implicitWidth : 0
+                        anchors.top: parent.top
+                        anchors.horizontalCenter: parent.horizontalCenter
+                    }
+                }
 
                 // PLAY / RESUME button
                 Rectangle {
@@ -389,6 +441,7 @@ FocusScope {
             }
 
             Column {
+                id: textColumn
                 topPadding: root.sh * 0.0083333 //4
                 width: root.sw * 0.54375 //348
                 spacing: root.sh * 0.0166667 //8
@@ -471,8 +524,9 @@ FocusScope {
             color: root.secondaryColor
             font.family: root.globalFont
             font.capitalization: Font.AllUppercase
-            anchors.top: itemDetails.bottom
-            anchors.topMargin: root.sh * 0.0145833 //7
+            x: detailRoot.sectionX
+            y: (detailRoot.showPoster ? textColumn.height : itemDetails.height)
+               + root.sh * 0.0145833 //7
             leftPadding: root.sw * 0.009375 //6
             rightPadding: root.sw * 0.009375 //6
             font.pixelSize: root.sh * 0.0291667 //14
@@ -483,8 +537,8 @@ FocusScope {
             id: audioRow
             visible: detail && detail.audioStreams && detail.audioStreams.length > 0
             anchors.top: pbSettingsLabel.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
+            x: detailRoot.sectionX
+            width: detailRoot.sectionW
             anchors.topMargin: root.sh * 0.0145833 //7
             height: root.sh * 0.0583333 //28
 
@@ -541,8 +595,8 @@ FocusScope {
             id: subtitleRow
             visible: detail && detail.subtitleStreams && detail.subtitleStreams.length > 1
             anchors.top: audioRow.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
+            x: detailRoot.sectionX
+            width: detailRoot.sectionW
             height: root.sh * 0.0583333 //28
 
             Rectangle {

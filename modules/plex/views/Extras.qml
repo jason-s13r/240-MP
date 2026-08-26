@@ -107,7 +107,11 @@ FocusScope {
     focus: true
 
     Keys.onUpPressed: {
-        if (launchingExtra || extras.length === 0) return
+        if (launchingExtra) return
+        // Off the top of the list — and off an empty one — is the
+        // SERVER | PROFILE line in the corner, when this screen has one.
+        if (itemList.currentIndex === 0 && moduleRoot.focusStatus()) return
+        if (extras.length === 0) return
         if (itemList.currentIndex > 0) itemList.currentIndex--
         else itemList.currentIndex = extras.length - 1
         itemList.positionViewAtIndex(itemList.currentIndex, ListView.Contain)

@@ -85,6 +85,9 @@ FocusScope {
 
         Keys.onUpPressed: {
             if (count === 0) return
+            // Off the top of the list is the SERVER | PROFILE line in the corner,
+            // when this screen has one; otherwise the list wraps as it always has.
+            if (currentIndex === 0 && moduleRoot.focusStatus()) return
             if (currentIndex > 0) currentIndex--
             else currentIndex = count - 1
             channelList.positionViewAtIndex(channelList.currentIndex, ListView.Contain)

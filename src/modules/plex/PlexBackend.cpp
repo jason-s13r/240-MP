@@ -815,6 +815,9 @@ QVariantMap PlexBackend::formatItem(const QJsonObject &m) const {
         {"type",                   m["type"].toString("movie")},
         {"durationDisplay",        msToDisplay(m["duration"].toInt())},
         {"grandparentTitle",       m["grandparentTitle"].toString()},
+        // Plex sometimes region-qualifies this ("de/16", "gb/15"); the OSD wants
+        // the certificate, not the country, so the prefix is dropped there.
+        {"contentRating",          m["contentRating"].toString()},
         {"parentTitle",            m["parentTitle"].toString()},
         {"parentRatingKey",        m["parentRatingKey"].toString()},
         // The show's year on a season row, and the show's key on an episode row.
@@ -827,7 +830,90 @@ QVariantMap PlexBackend::formatItem(const QJsonObject &m) const {
         {"leafCount",              m["leafCount"].toInt()},
         {"viewedLeafCount",        m["viewedLeafCount"].toInt()},
         {"originallyAvailableAt",  m["originallyAvailableAt"].toString()},
+        // Which library the item came from — Continue Watching arrives as one
+        // mixed list and is split back into a row per library from these. Set
+        // here because formatItem is the one place every list flows through.
+        {"librarySectionID",       m["librarySectionID"].toVariant().toString()},
+        {"librarySectionTitle",    m["librarySectionTitle"].toString().toUpper()},
+        // Artwork paths, server-relative. Resolved to a URL by poster_url();
+        // which of the three applies depends on the item's type.
+        {"thumb",                  m["thumb"].toString()},
+        {"parentThumb",            m["parentThumb"].toString()},
+        {"grandparentThumb",       m["grandparentThumb"].toString()},
     };
+}
+
+QString PlexBackend::artworkKey(const QVariantMap &item, const QString &context) const {
+    // Which artwork: the most specific the item has (own → season → show), or
+    // the show's, which keeps a whole wall of grid cells reading as one shelf
+    // instead of a mix of portrait art and 16:9 stills.
+    const bool specificArt = (context == QLatin1String("detail")
+                              || context == QLatin1String("shelf"));
+    const QString type = item.value("type").toString();
+
+    QStringList order;
+    if (type == QLatin1String("episode"))
+        // A badge exists to name the show, so it skips the episode's own still
+        // even when there is one — that still is the image it is drawn over.
+        order = (context == QLatin1String("badge"))
+                    ? QStringList{"parentThumb", "grandparentThumb"}
+              : specificArt ? QStringList{"thumb", "parentThumb", "grandparentThumb"}
+                            : QStringList{"grandparentThumb", "thumb"};
+    else if (type == QLatin1String("season"))
+        order = QStringList{"thumb", "parentThumb"};
+    else
+        order = QStringList{"thumb"};
+
+    for (const QString &key : order)
+        if (!item.value(key).toString().isEmpty()) return key;
+    return {};
+}
+
+double PlexBackend::poster_aspect(const QVariantMap &item, const QString &context) const {
+    // An episode's own thumb is a frame from the episode, which Plex stores at
+    // 16:9. Every other artwork any item resolves to — its season's, its show's,
+    // a movie's own — is portrait cover art.
+    const bool still = (item.value("type").toString() == QLatin1String("episode")
+                        && artworkKey(item, context) == QLatin1String("thumb"));
+    return still ? 16.0 / 9.0 : 2.0 / 3.0;
+}
+
+QString PlexBackend::poster_url(const QVariantMap &item, int width, int height,
+                                const QString &context) const {
+    // How it is fitted is the other half of what context decides: cropped to
+    // fill the requested box, or fitted whole inside it. Not the same flag as
+    // the artwork choice — a shelf wants the episode's own still *and* the crop.
+    const bool cropToCell = (context != QLatin1String("detail"));
+
+    const QString thumb = item.value(artworkKey(item, context)).toString();
+    const QString base = serverUrl();
+    if (thumb.isEmpty() || base.isEmpty()) return {};
+
+    // Server-side resize: a 480p-class poster must never pull full-res art down
+    // to a Pi. The token rides as a query param because a QML Image cannot set
+    // the X-Plex-Token header plexRequest() uses everywhere else.
+    QUrl url(base + QStringLiteral("/photo/:/transcode"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("width"),   QString::number(width));
+    q.addQueryItem(QStringLiteral("height"),  QString::number(height));
+    if (cropToCell) {
+        // Cover-crop: minSize treats width/height as a minimum (scaling until
+        // the box is covered, not until it fits) and upscale lets undersized art
+        // reach it. Done on the server, once, at the exact pixel size the cell
+        // draws. A shelf cell is already cut to the art's own shape, so nothing
+        // is lost there — the crop is what makes it arrive at full size.
+        q.addQueryItem(QStringLiteral("minSize"), QStringLiteral("1"));
+        q.addQueryItem(QStringLiteral("upscale"), QStringLiteral("1"));
+    }
+    // Detail and row art stay fitted: there the image describes one item and its
+    // own shape is information — a 16:9 still should read as a still.
+    // Percent-encoded explicitly — QUrlQuery leaves '/' alone in a value, and
+    // the nested path has to arrive at Plex encoded.
+    q.addQueryItem(QStringLiteral("url"),
+                   QString::fromLatin1(QUrl::toPercentEncoding(thumb)));
+    q.addQueryItem(QStringLiteral("X-Plex-Token"), serverToken());
+    url.setQuery(q);
+    return url.toString();
 }
 
 void PlexBackend::flattenSeasons(const QVariantList &rawItems,
@@ -1339,6 +1425,31 @@ void PlexBackend::deleteDeviceThenAuth(const QString &token, std::function<void(
 // Browse
 // ---------------------------------------------------------------------------
 
+// The key the Libraries multiselect writes: one entry per section per server,
+// so the same section number on two servers is two separate choices.
+static QString libraryPrefKey(const QString &machineId, const QString &sectionId) {
+    return machineId.isEmpty() ? sectionId : machineId + "_" + sectionId;
+}
+
+QVariantList PlexBackend::enabledLibraryItems(const QVariantList &items) const {
+    QJsonObject libEnabled = loadConfig()["modules"].toObject()
+                             ["com.240mp.plex"].toObject()["libraries"].toObject();
+    // Nothing chosen yet means everything is on, the same default the library
+    // list itself takes.
+    if (libEnabled.isEmpty()) return items;
+    QString machineId = loadAuth()["active_server_machine_id"].toString();
+    QVariantList out;
+    for (const auto &v : items) {
+        QString sectionId = v.toMap()["librarySectionID"].toString();
+        // An item that does not say where it came from is kept: dropping it
+        // would hide it on the say-so of a field the server need not send.
+        if (sectionId.isEmpty()
+            || libEnabled[libraryPrefKey(machineId, sectionId)].toBool(true))
+            out.append(v);
+    }
+    return out;
+}
+
 void PlexBackend::load_libraries() {
     checkAndRefreshOnStartup([this]() {
         load_libraries_impl();
@@ -1356,18 +1467,21 @@ void PlexBackend::load_libraries_impl() {
                          << midTail(loadAuth()["active_server_machine_id"].toString())
                          << "token=" << tokenShape(token);
 
-    // Check continue watching
-    QUrl cwUrl(uri + "/hubs/continueWatching");
-    QUrlQuery cwq; cwq.addQueryItem("limit","1");
-    cwUrl.setQuery(cwq);
-    auto *cwReply = plexGet(cwUrl, token);
+    // Check continue watching. The whole hub rather than one item: a disabled
+    // library's items are dropped from the row's contents, so the first item
+    // alone cannot say whether the row would have anything left in it.
+    auto *cwReply = plexGet(QUrl(uri + "/hubs/continueWatching"), token);
     connect(cwReply, &QNetworkReply::finished, this, [this, cwReply, uri, token]() {
         cwReply->deleteLater();
         bool hasCw = false;
         if (cwReply->error() == QNetworkReply::NoError) {
             QJsonArray hubs = QJsonDocument::fromJson(cwReply->readAll())
                               .object()["MediaContainer"].toObject()["Hub"].toArray();
-            hasCw = !hubs.isEmpty() && !hubs[0].toObject()["Metadata"].toArray().isEmpty();
+            QVariantList cw;
+            for (const auto &hv : hubs)
+                for (const auto &mv : hv.toObject()["Metadata"].toArray())
+                    cw.append(formatItem(mv.toObject()));
+            hasCw = !enabledLibraryItems(cw).isEmpty();
         }
 
         auto *secReply = plexGet(QUrl(uri + "/library/sections"), token);
@@ -1439,8 +1553,8 @@ void PlexBackend::load_libraries_impl() {
                 QJsonObject s = sv.toObject();
                 if (!kSupportedLibraryTypes.contains(s["type"].toString())) continue;
                 QString key = s["key"].toString();
-                QString libKey = machineId.isEmpty() ? key : machineId + "_" + key;
-                if (!libEnabled.isEmpty() && !libEnabled[libKey].toBool(true)) continue;
+                if (!libEnabled.isEmpty()
+                    && !libEnabled[libraryPrefKey(machineId, key)].toBool(true)) continue;
                 items.append(QVariantMap{
                     {"key",         key},
                     {"title",       s["title"].toString().toUpper()},
@@ -1493,6 +1607,9 @@ void PlexBackend::load_continue_watching() {
         for (const auto &hv : hubs)
             for (const auto &mv : hv.toObject()["Metadata"].toArray())
                 items.append(formatItem(mv.toObject()));
+        // Before flattening, not after: a season in a switched-off library
+        // would otherwise cost a request to expand items nobody will see.
+        items = enabledLibraryItems(items);
         flattenSeasons(items, [this](const QVariantList &flat) { emit continueWatchingLoaded(flat); });
     });
 }
@@ -1515,11 +1632,20 @@ void PlexBackend::load_section_hubs(const QString &sectionId) {
         QVariantList result;
         for (const auto &hv : hubs) {
             QJsonObject h = hv.toObject();
-            if (h["Metadata"].toArray().isEmpty() && h["size"].toInt() == 0) continue;
+            QJsonArray meta = h["Metadata"].toArray();
+            if (meta.isEmpty() && h["size"].toInt() == 0) continue;
+            // This response already carries each hub's first items, so the
+            // sectioned view costs no extra requests; the text list ignores them
+            // and still drills down through hubKey, so both stay in the map.
+            // Seasons are left unflattened — one /children request per season
+            // per hub is not a trade a Pi should make to open a menu.
+            QVariantList items;
+            for (const auto &mv : meta) items.append(formatItem(mv.toObject()));
             result.append(QVariantMap{
                 {"title",   h["title"].toString().toUpper()},
                 {"key",     h["key"].toString()},
                 {"hubKey",  h["hubKey"].toString()},
+                {"items",   items},
             });
         }
         emit hubsLoaded(result);
@@ -1739,7 +1865,10 @@ void PlexBackend::load_category_items(const QString &sectionId, const QString &f
 void PlexBackend::check_section_capabilities(const QString &sectionId) {
     QString uri = serverUrl(), token = serverToken();
 
-    auto *caps = new QVariantMap{{"recommended",false},{"collections",false},{"playlists",false}};
+    // sectionId rides along so a caller checking several libraries at once can
+    // tell the answers apart — the signal is otherwise identical for all of them.
+    auto *caps = new QVariantMap{{"sectionId",sectionId},
+                                 {"recommended",false},{"collections",false},{"playlists",false}};
     auto *remaining = new int(3);
     auto done = [this, caps, remaining]() {
         (*remaining)--;
@@ -1894,9 +2023,15 @@ QVariantMap PlexBackend::buildItemDetail(const QJsonObject &meta) const {
         {"parentIndex",      meta["parentIndex"].toInt()},
         {"parentRatingKey",  meta["parentRatingKey"].toString()},
         {"grandparentTitle", meta["grandparentTitle"].toString()},
+        {"contentRating",    meta["contentRating"].toString()},
         {"parentTitle",      meta["parentTitle"].toString()},
         {"parentYear",       meta["parentYear"].toVariant()},
         {"grandparentRatingKey", meta["grandparentRatingKey"].toString()},
+        // Mirrors formatItem so poster_url() works on a detail regardless of how
+        // the item was reached — including paths with no preceding list row.
+        {"thumb",            meta["thumb"].toString()},
+        {"parentThumb",      meta["parentThumb"].toString()},
+        {"grandparentThumb", meta["grandparentThumb"].toString()},
     };
 }
 

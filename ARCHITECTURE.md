@@ -543,6 +543,35 @@ Off by default. The global `poster_grid` app setting (Settings → APPLICATION) 
 
 The building blocks are shared and backend-agnostic: a host passes resolver functions (`posterSource`, `titleText`, …) and the component never learns which backend the items came from. [PosterGrid](#postergrid-viewscomponentspostergridqml) is the tiled browser, [PosterShelf](#postershelf-viewscomponentspostershelfqml) one horizontal row under a heading, [ShelfList](#shelflist-viewscomponentsshelflistqml) a stack of those, and [PosterCell](#postercell-viewscomponentspostercellqml) the single cell all of them draw.
 
+### Plex
+
+`Items.qml` swaps its `ListView` for a [PosterGrid](#postergrid-viewscomponentspostergridqml) on media lists only — directory rows (hubs, collections, playlists, categories) have no artwork and stay as text — and the movie / episode / show / season detail views show the poster above their action buttons, moving their list section alongside it rather than below. The show and season views also draw each sub-list row's own art left of its title, in a slot reserved for every row so titles stay aligned.
+
+The home screen (`Libraries.qml`) becomes a shelf per library, each holding **that library's whole menu as tiles** followed by whatever it has in progress. A tile only appears when the library actually has that thing, which costs `check_section_capabilities` per library plus one Continue Watching fetch covering all of them; `capabilitiesLoaded` now carries the `sectionId` it answered for, without which several libraries cannot be probed at once (`Library.qml` guards on it too). The menu is one `ListView` of mixed entries — `{kind: "row"}` and `{kind: "shelf"}` behind a `Loader` delegate — with focus never leaving it: Up/Down step entries whatever their kind, Left/Right are forwarded to the selected shelf through `PosterShelf`'s `moveLeft()`/`moveRight()`, which is what `highlighted` exists for.
+
+The module's **Libraries** setting (a `multiselect_submenu`, keyed `<machineId>_<sectionKey>` so the same section number on two servers is two choices) hides a library everywhere, not only from the library list. `/hubs/continueWatching` answers for the whole server, so `load_continue_watching` runs its items through `enabledLibraryItems` *before* flattening seasons — a season in a switched-off library would otherwise cost a request to expand items nobody will see.
+
+`PlexBackend::poster_url(item, w, h, context)` builds the URL. It takes the whole item map so the "which artwork for this type" rule lives in one place, and `context` picks two independent things — *which* artwork, and whether it is cropped to fill a fixed-shape cell or fitted whole:
+
+| `context` | Artwork for an episode | Fit |
+|---|---|---|
+| `"grid"` (default) | the show's poster | cropped to the cell |
+| `"shelf"` | own still → season → show | cropped (the cell is cut to the art's own shape, so nothing is lost) |
+| `"detail"` | own still → season → show | fitted whole |
+| `"badge"` | the season's poster → the show's, **never** its own still | cropped to the cell |
+
+A grid gives an episode its show's poster so a whole library tiles as one shelf; a shelf is a handful of items, where the episode's own still identifies it better. `"badge"` is the corner overlay that puts back what a still gives up. `poster_aspect(item, context)` returns the shape the art `poster_url` *would* return — `16/9` for an episode's own still, `2/3` for cover art — so shelves can cut each cell to its own width; that is why the rule lives beside the fallback chain instead of being guessed in QML. Resizing is server-side (`/photo/:/transcode`), with the token as a query param because a QML `Image` cannot set the `X-Plex-Token` header.
+
+#### SERVER | PROFILE status line
+
+`modules/plex/views/StatusLine.qml`, instantiated once by the module's `Root.qml` so it outlives a view swap. Which server you are browsing and who you are browsing it as change what every list contains, and nothing else says them once you are past the main menu.
+
+Only the main menu makes it a nav target (`Root.statusNavigable`): deeper in, switching would throw away the path that got you there, so the switch lives one BACK away. A view hands focus up to it by calling `moduleRoot.focusStatus()` when a step upward runs off the top of its own content — the call returns whether the corner took it, so the view falls back to its usual wrap when there is nothing up there. `Root.qml` dims the loader while the corner has focus, since every view here draws its selection from a `currentIndex` rather than from focus.
+
+The line claims its width from the shell through `root.statusReserve` (a `Binding`, so the claim is released when the module unloads) and anchors at `root.statusMargin` on `root.cornerCenterY`. `root.cornerReserve` is what anything at the right end of the top row subtracts from its own width — `AppBar`'s, and the IP address in `views/Settings.qml`.
+
+`AppBar` also gained `subtitleElide`: a name reads from the left so its tail goes, but a **breadcrumb**'s tail says where you actually are, so `Items.qml` sets `Text.ElideLeft`. It builds that breadcrumb from a `crumbs` array carried in `navParams`, each hop appending the title of the row it opened, so a category chain reads `MOVIES > CATEGORIES > DIRECTOR > STEVEN SPIELBERG` rather than four screens that all say `MOVIES`.
+
 ### YouTube
 
 With the setting on, `Channels.qml` draws its channel list as a grid of profile pictures — square, not 2:3, because an avatar is — keeping the A–Z panel and its Right-to-browse hand-off. A channel's RSS feed carries no artwork, so `YouTubeBackend::channel_art_url(channelId, size)` answers from a cache the module scrapes in the background; `channelArtLoaded` announces each one, and the view bumps an `artRev` counter that its `posterFor()` reads, so cells re-resolve in place rather than the model being reassigned (which would reset the grid under the selection). `channel_art_for(id, name, size)` is the same lookup by *name*, for Watch Later, History and playlist entries, which carry no channel ID.

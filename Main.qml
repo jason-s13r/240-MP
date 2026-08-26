@@ -88,6 +88,25 @@ Window {
     property string surfaceColor:   (allThemes[currentTheme] || allThemes["Video 1"]).surface
     property string accentColor:    (allThemes[currentTheme] || allThemes["Video 1"]).accent
 
+    // The top row's right-hand corner, where a module may hang a status line of
+    // its own — the Plex module's SERVER | PROFILE.
+    readonly property real cornerGap: root.sw * 0.025 //16
+    readonly property real cornerMargin: root.sw * 0.12 //76.8
+    readonly property real cornerCenterY: root.sh * 0.1260417 //60.5
+
+    // Width a module claims there. Written by the module that draws one and back
+    // to 0 when it goes away, so the header shrinks for it rather than running
+    // into it.
+    property real statusReserve: 0
+
+    // Where that line hangs: a module anchors to parent.right with this margin.
+    readonly property real statusMargin: root.cornerMargin
+
+    // How much of the top row the corner takes, all told. A header sizes itself
+    // to what is left rather than running into it.
+    readonly property real cornerReserve:
+        root.statusReserve > 0 ? root.statusReserve + root.cornerGap : 0
+
     // Poster art feature switch, read by the media modules' browse and detail
     // views. Mirrors color_scheme: seeded in Component.onCompleted, kept live by
     // onAppSettingChanged. Views must bind root.posterGrid, never appCore.

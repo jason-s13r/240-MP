@@ -1,7 +1,9 @@
 import QtQuick
 import Components
 
-// Main Plex home screen: Continue Watching + library list
+// Main Plex home screen: the library menu. With cover art on, each library is a
+// shelf carrying its own menu as a row of tiles — the whole of Library.qml's
+// intermediate menu, so that view is simply never reached in this mode.
 FocusScope {
     id: browseRoot
 
@@ -15,13 +17,268 @@ FocusScope {
     signal goBack()
 
     property var libraries: []
-    property string serverName: ""
+    // Only for the PIN prompt below, which names the profile it is asking for.
     property string userName: ""
-    // Servers the active user can switch to from the main menu. More than one
-    // means the quick-switch action (◄/►) is offered.
-    property var switchableServers: []
-    property bool canSwitchServer: switchableServers.length > 1
     property string errorMsg: ""
+
+    // What each library actually has, so no tile opens on NO ITEMS FOUND. Three
+    // requests per library (check_section_capabilities) plus one Continue
+    // Watching fetch for all of them. The menu waits on the lot: tiles that
+    // appear and vanish under the selection are worse than a moment of LOADING.
+    property var caps: ({})       // sectionId -> { recommended, collections, playlists }
+    property var cwItems: ({})    // sectionId -> the items in progress in it
+    property int capsPending: 0
+    property bool cwPending: false
+    property bool menuResolved: false
+
+    readonly property bool menuReady: libraries.length > 0
+                                      && (!root.posterGrid || menuResolved)
+    readonly property bool posterMenu: root.posterGrid && menuResolved
+
+    // The artwork rule lives in PlexBackend::poster_url; tiles carry none, so
+    // this returns "" for them and PosterCell draws its titled card instead.
+    function posterFor(item, w, h) {
+        if (!item || item.nav !== undefined) return ""
+        return plexBackend.poster_url(item, Math.round(w), Math.round(h), "shelf")
+    }
+
+    // A tile has no badge either — posterFor already gave it none.
+    function badgeFor(item, w, h) {
+        if (!item || item.nav !== undefined) return ""
+        return plexBackend.poster_url(item, Math.round(w), Math.round(h), "badge")
+    }
+
+    // The episode and show names, and the runtime, a 16:9 still cannot give. A
+    // tile has none of them, and the shelf only asks on landscape cells anyway.
+    function captionFor(item) {
+        if (!item || item.nav !== undefined) return null
+        return { top:    item.title || "",
+                 bottom: item.grandparentTitle || "",
+                 corner: item.durationDisplay || "" }
+    }
+
+    // The card at the front of every shelf is a spine, not a poster: it is the
+    // way through to the whole library, so it takes the least width it can and
+    // PosterCell turns the label a quarter turn. Standing at the front of the
+    // row, that turned name names the row — which is what let the heading go.
+    //
+    // Only that one card. The rest of a library's menu leads to a corner of it,
+    // and those stay plain portrait cards wide enough to read RECOMMENDED.
+    readonly property real spinePosterW: root.sh * 0.0375 //18
+    function isSpine(item) { return item && item.nav === "library_all" }
+
+    // Tiles are always portrait, whatever shape the art beside them is: matched
+    // to a TV shelf's 16:9 stills, five of them would eat the row before a
+    // single episode is in it. A cell keeps its aspect and the shelf's height
+    // sets its size, so a width is asked for as the aspect that comes out that
+    // wide at that height.
+    function aspectFor(item) {
+        if (!item) return 2 / 3
+        if (isSpine(item)) return (shelfPosterH > 0) ? spinePosterW / shelfPosterH : 2 / 3
+        return (item.nav !== undefined) ? 2 / 3
+                                        : plexBackend.poster_aspect(item, "shelf")
+    }
+
+    // A library's shelf: its own menu as tiles — the rows Library.qml lists —
+    // then the items in progress. VIEW ALL and CATEGORIES need no probe. The
+    // CONTINUE WATCHING tile sits last, immediately before the items it names,
+    // so the posters at the end of a row are not read as the whole library.
+    function tilesFor(lib) {
+        var c = caps[lib.sectionId] || ({})
+        var n = lib.title
+        // label is what the card reads, title what the view it opens is called:
+        // the card names its library because the shelf no longer does, while the
+        // breadcrumb already has the library in front of it and would otherwise
+        // say MOVIES > MOVIES CATEGORIES. The spine reads the bare name, not
+        // VIEW ALL — that is said in captionTitle, where a selection is
+        // described.
+        var out = [{ nav: "library_all", title: "VIEW ALL", label: n }]
+        if (c.recommended)
+            out.push({ nav: "hubs", title: "RECOMMENDED", label: "RECOMMENDED " + n })
+        if (c.collections)
+            out.push({ nav: "collections", title: "COLLECTIONS", label: n + " COLLECTIONS" })
+        if (c.playlists)
+            out.push({ nav: "playlists", title: "PLAYLISTS", label: n + " PLAYLISTS" })
+        out.push({ nav: "categories", title: "CATEGORIES", label: n + " CATEGORIES" })
+        return out.concat(cwItems[lib.sectionId] || [])
+    }
+
+
+    // One flat column of entries. Each real library is a shelf holding its menu;
+    // the synthetic rows — the all-libraries Continue Watching list, LIVE TV —
+    // have no menu of their own and stay nav rows. Tiles carry no artwork, so
+    // PosterCell draws them as its bordered titled cards.
+    readonly property var navEntries: {
+        var out = []
+        for (var i = 0; i < libraries.length; i++) {
+            var lib = libraries[i]
+            if (posterMenu && lib.sectionId)
+                out.push({ kind: "shelf", title: lib.title, lib: lib, items: tilesFor(lib) })
+            else
+                out.push({ kind: "row", title: lib.title, lib: lib })
+        }
+        return out
+    }
+
+    // Where the selection sits along the current shelf. Vertical steps reset it,
+    // so Up and Down land on the front of the row they arrive at — a carried
+    // column would drop out of a long Continue Watching run into the middle of
+    // the next library. It survives leaving the screen (listState) and a shelf
+    // being scrolled out of view and rebuilt.
+    property int shelfColumn: 0
+
+    // Shelf mode borrows the poster grid's taller content box: the AppBar ends
+    // at y84 and the hint row starts at y414, so 104..397 is free. Without a
+    // shelf every value here is today's layout unchanged.
+    readonly property real contentTop: posterMenu ? root.sh * 0.2166667  //104
+                                                  : root.sh * 0.25       //120
+    readonly property real contentH: posterMenu ? root.sh * 0.5833333  //280
+                                                : root.sh * 0.525      //252
+    // One line for the whole screen, in the strip the shelves give up for it.
+    readonly property real titleH: root.sh * 0.0375 //18
+    readonly property real rowH: root.sh * 0.0583333 //28
+    // Posters plus the cells' ring, and nothing else: the spine at the front of
+    // the row already names the library, so a heading would say it a third time
+    // for a quarter of a poster's height — which buys another library on the
+    // screen instead. One row height for every library, whichever shape its art
+    // is: 16:9 cells, with 2:3 covers brought down to the same height.
+    readonly property real shelfGutter: root.sh * 0.0125 //6 — PosterShelf's frameW * 2
+    readonly property real shelfPosterH: root.sh * 0.15625 //75
+    readonly property real shelfEntryH: shelfPosterH + shelfGutter //81
+
+    function entryAt(i) {
+        return (i >= 0 && i < navEntries.length) ? navEntries[i] : null
+    }
+    // The PosterShelf for the selected entry, or null when it is a nav row.
+    // navList.currentItem is the Loader; its item is the shelf.
+    function currentShelf() {
+        var e = entryAt(navList.currentIndex)
+        if (!e || e.kind !== "shelf") return null
+        return navList.currentItem ? navList.currentItem.item : null
+    }
+
+    // What the title line names. A shelf's own currentIndex is not something a
+    // binding can watch from out here, so every place that moves a selection
+    // says so — the shelves included, through onMoved and on being built.
+    property var selectedItem: null
+    function refreshSelected() {
+        var sh = currentShelf()
+        selectedItem = sh ? sh.currentItemData : null
+    }
+
+    function moveTo(i) {
+        navList.currentIndex = i
+        navList.positionViewAtIndex(i, ListView.Contain)
+        // Seats an already-built shelf on the carried column; one created by
+        // this move seats itself in Component.onCompleted.
+        var sh = currentShelf()
+        if (sh) sh.moveTo(Math.min(shelfColumn, Math.max(0, sh.count - 1)))
+        refreshSelected()
+    }
+
+    // A step to another entry, as opposed to restoring a remembered position:
+    // the shelf arrived at starts at its first item.
+    function stepTo(i) {
+        shelfColumn = 0
+        moveTo(i)
+    }
+
+    // Builds the menu once every probe has answered. Called after each one and
+    // once up front, so a server with nothing to probe does not wait at all.
+    function resolveMenu() {
+        if (menuResolved || capsPending > 0 || cwPending) return
+        probeTimeout.stop()
+        menuResolved = true
+        restoreSelection()
+    }
+
+    function restoreSelection() {
+        if (navEntries.length === 0) return
+        shelfColumn = navListState.shelfColumn || 0
+        var restore = (navListState.currentIndex !== undefined) ? navListState.currentIndex : 0
+        moveTo(Math.min(restore, navEntries.length - 1))
+    }
+
+    function listState() {
+        return { currentIndex: navList.currentIndex, shelfColumn: browseRoot.shelfColumn }
+    }
+
+    // Names a tile, and — beside the library heading — whatever the selection
+    // is. An episode reads as its show plus SxEy, as it does in Items.qml: its
+    // own name alone says nothing about which show it belongs to.
+    function tileTitle(item) {
+        if (!item) return ""
+        if (item.nav !== undefined) return item.label || item.title || ""
+        if (item.type === "episode" && item.grandparentTitle) {
+            var sNum = (item.parentIndex != null) ? item.parentIndex : "?"
+            var eNum = (item.index != null) ? item.index : "?"
+            return item.grandparentTitle + " S" + sNum + "E" + eNum + ": " + (item.title || "")
+        }
+        return item.title || ""
+    }
+
+    // What the title line says. The posters sit at the end of a row of menu
+    // tiles, so what marks them as in-progress belongs on the item itself and
+    // not only on the tile ahead of them.
+    function captionTitle(item) {
+        if (!item) return ""
+        // The one cell whose name is not what it is but where it goes.
+        if (isSpine(item)) return "VIEW ALL " + tileTitle(item)
+        if (item.nav !== undefined) return tileTitle(item)
+        return "Continue: " + tileTitle(item)
+    }
+
+    // Tiles reach the leaf views directly: with the menu on the shelf there is
+    // nothing left for Library.qml to show, so it is not entered at all here.
+    function openTile(lib, tile) {
+        if (!lib || !tile) return
+        browseRoot.navigateTo("Items.qml", {
+            listType: tile.nav,
+            title: tile.title,
+            sectionId: lib.sectionId,
+            libraryName: lib.title
+        }, browseRoot.listState())
+    }
+
+    // A shelf holds both, so Return lands here first.
+    function openShelfItem(lib, item) {
+        if (!lib || !item) return
+        if (item.nav !== undefined) openTile(lib, item)
+        else openMedia(lib, item)
+    }
+
+    // The same three destinations Items.qml picks between. Continue Watching is
+    // episodes and movies, but the rule belongs with the item's type rather than
+    // with the list it arrived in.
+    function openMedia(lib, item) {
+        var path = (item.type === "show") ? "ItemShow.qml"
+                 : (item.type === "season") ? "ItemSeason.qml"
+                 : "Item.qml"
+        var params = { item: item, libraryName: lib.title }
+        if (item.type === "season") params.showTitle = item.parentTitle || ""
+        browseRoot.navigateTo(path, params, browseRoot.listState())
+    }
+
+    function openLibrary(lib) {
+        if (!lib) return
+        if (lib.key === "continue_watching") {
+            browseRoot.navigateTo("Items.qml", {
+                listType: "continue_watching",
+                title: "CONTINUE WATCHING",
+                libraryName: lib.title
+            }, browseRoot.listState())
+        } else if (lib.key === "live_tv") {
+            browseRoot.navigateTo("LiveChannels.qml", {
+                libraryName: lib.title
+            }, browseRoot.listState())
+        } else {
+            browseRoot.navigateTo("Library.qml", {
+                libraryName: lib.title,
+                sectionId: lib.sectionId,
+                sectionType: lib.sectionType
+            }, browseRoot.listState())
+        }
+    }
 
     Connections {
         target: plexBackend
@@ -29,15 +286,63 @@ FocusScope {
         function onLibrariesLoaded(items) {
             browseRoot.errorMsg = ""
             browseRoot.libraries = items
-            if (items.length > 0) {
-                var restore = (navListState.currentIndex !== undefined) ? navListState.currentIndex : 0
-                libraryList.currentIndex = Math.min(restore, items.length - 1)
-                libraryList.positionViewAtIndex(libraryList.currentIndex, ListView.Contain)
+            if (!root.posterGrid) { browseRoot.restoreSelection(); return }
+
+            // Every probe goes out at once — they are independent and small —
+            // and the menu is built when the last one answers.
+            browseRoot.caps = ({})
+            browseRoot.cwItems = ({})
+            browseRoot.capsPending = 0
+            browseRoot.cwPending = false
+            for (var i = 0; i < items.length; i++) {
+                if (items[i].sectionId) {
+                    browseRoot.capsPending++
+                    plexBackend.check_section_capabilities(items[i].sectionId)
+                } else if (items[i].key === "continue_watching") {
+                    browseRoot.cwPending = true
+                }
             }
+            if (browseRoot.cwPending) plexBackend.load_continue_watching()
+            probeTimeout.restart()
+            browseRoot.resolveMenu()
+        }
+
+        function onCapabilitiesLoaded(c) {
+            if (!c.sectionId) return
+            // A 498 retry emits twice for the same section; only the first
+            // answer is what capsPending is counting.
+            if (browseRoot.caps[c.sectionId] === undefined) browseRoot.capsPending--
+            browseRoot.caps[c.sectionId] = c
+            browseRoot.capsChanged()
+            browseRoot.resolveMenu()
+        }
+
+        function onContinueWatchingLoaded(items) {
+            // One request covers every library; each shelf takes its own slice,
+            // in the order the server sent — Plex's own recency order.
+            var by = ({})
+            for (var i = 0; i < items.length; i++) {
+                var id = items[i].librarySectionID
+                if (!id) continue
+                if (!by[id]) by[id] = []
+                by[id].push(items[i])
+            }
+            browseRoot.cwItems = by
+            browseRoot.cwPending = false
+            browseRoot.resolveMenu()
         }
 
         function onErrorOccurred(msg) {
             console.log("[Library] Error: " + msg)
+            // The libraries are already up, so this is a probe failing behind
+            // them. Build the menu without what it could not confirm rather
+            // than covering a working screen with an error.
+            if (browseRoot.libraries.length > 0 && !browseRoot.menuResolved) {
+                browseRoot.cwPending = false
+                browseRoot.capsPending = 0
+                browseRoot.resolveMenu()
+                return
+            }
             browseRoot.errorMsg = msg
         }
 
@@ -53,18 +358,22 @@ FocusScope {
         }
     }
 
-    Component.onCompleted: {
-        browseRoot.serverName = plexBackend.get_active_server_name()
-        browseRoot.userName = plexBackend.get_active_user_name()
-        browseRoot.switchableServers = plexBackend.get_switchable_servers()
-        plexBackend.load_libraries()
+    // The menu used to appear the moment the libraries did; now it waits on the
+    // probes, so a request that never answers would leave it on LOADING forever.
+    // Past this the menu is built with whatever came back.
+    Timer {
+        id: probeTimeout
+        interval: 5000
+        onTriggered: {
+            browseRoot.capsPending = 0
+            browseRoot.cwPending = false
+            browseRoot.resolveMenu()
+        }
     }
 
-    function openServerSwitch() {
-        if (!canSwitchServer) return
-        browseRoot.navigateTo("ServerSelect.qml",
-                              { servers: switchableServers, switching: true },
-                              { currentIndex: libraryList.currentIndex })
+    Component.onCompleted: {
+        browseRoot.userName = plexBackend.get_active_user_name()
+        plexBackend.load_libraries()
     }
 
     focus: true
@@ -73,11 +382,11 @@ FocusScope {
     // UI
     // ---
 
-    // Header
+    // Header. No subtitle: it used to carry SERVER (PROFILE), which the corner
+    // now says on every screen — see StatusLine.qml.
     AppBar {
         iconSource: moduleRoot.moduleIcon
         title: moduleRoot.moduleName
-        subtitle: browseRoot.serverName + (browseRoot.userName ? " (" + browseRoot.userName + ")" : "")
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.topMargin: root.sh * 0.125 //60
@@ -86,7 +395,7 @@ FocusScope {
 
     // Loading Indicator
     Text {
-        visible: libraries.length === 0 && browseRoot.errorMsg === ""
+        visible: !browseRoot.menuReady && browseRoot.errorMsg === ""
         text: "LOADING..."
         color: root.tertiaryColor
         font.family: root.globalFont
@@ -108,84 +417,29 @@ FocusScope {
         font.pixelSize: root.sh * 0.0375 //18
     }
 
-    // Body
-    ListView {
-        id: libraryList
-        model: libraries
-        anchors.top: parent.top
-        anchors.left: parent.left
-        anchors.topMargin: root.sh * 0.25 //120
-        anchors.leftMargin: root.sw * 0.115625 //74
-        width: root.sw * 0.76875 //492
-        height: root.sh * 0.525 //252
-        clip: true
-        focus: true
+    // A nav row. Identical to the menu row this screen has always had.
+    Component {
+        id: rowComponent
 
-        Keys.onUpPressed: {
-            if (count === 0) return
-            if (currentIndex > 0) currentIndex--
-            else currentIndex = count - 1
-            libraryList.positionViewAtIndex(libraryList.currentIndex, ListView.Contain)
-        }
-        Keys.onDownPressed: {
-            if (count === 0) return
-            if (currentIndex < count - 1) currentIndex++
-            else currentIndex = 0
-            libraryList.positionViewAtIndex(libraryList.currentIndex, ListView.Contain)
-        }
-        Keys.onLeftPressed: browseRoot.openServerSwitch()
-        Keys.onRightPressed: browseRoot.openServerSwitch()
-
-        Keys.onReturnPressed: {
-            var lib = libraries[currentIndex]
-            if (!lib) return
-
-            if (lib.key === "continue_watching") {
-                browseRoot.navigateTo("Items.qml", {
-                    listType: "continue_watching",
-                    title: "CONTINUE WATCHING",
-                    libraryName: lib.title
-                }, { currentIndex: libraryList.currentIndex })
-            } else if (lib.key === "live_tv") {
-                browseRoot.navigateTo("LiveChannels.qml", {
-                    libraryName: lib.title
-                }, { currentIndex: libraryList.currentIndex })
-            } else {
-                browseRoot.navigateTo("Library.qml", {
-                    libraryName: lib.title,
-                    sectionId: lib.sectionId,
-                    sectionType: lib.sectionType
-                }, { currentIndex: libraryList.currentIndex })
-            }
-        }
-
-        Keys.onPressed: function(event) {
-            if (event.key === Qt.Key_Escape || event.key === Qt.Key_Backspace || event.key === Qt.Key_Back) {
-                browseRoot.goBack()
-                event.accepted = true
-            }
-        }
-
-        delegate: Item {
-            width: libraryList.width
-            height: root.sh * 0.0583333 //28
+        Item {
+            readonly property bool current: navList.currentIndex === entryIndex
 
             Item {
                 id: textClip
-                width: Math.min(rowText.implicitWidth, libraryList.width)
-                height: parent.height
+                width: Math.min(rowText.implicitWidth, navList.width)
+                height: browseRoot.rowH
                 clip: true
 
                 Rectangle {
                     color: root.accentColor
                     anchors.fill: rowText
-                    visible: libraryList.currentIndex === index
+                    visible: current
                 }
 
                 Text {
                     id: rowText
-                    text: modelData.title || ""
-                    color: libraryList.currentIndex === index ? root.surfaceColor : root.primaryColor
+                    text: entry.title || ""
+                    color: current ? root.surfaceColor : root.primaryColor
                     font.family: root.globalFont
                     font.capitalization: Font.AllUppercase
                     anchors.verticalCenter: parent.verticalCenter
@@ -198,8 +452,7 @@ FocusScope {
                 }
 
                 SequentialAnimation {
-                    running: (libraryList.currentIndex === index) &&
-                             (rowText.implicitWidth > textClip.width)
+                    running: current && (rowText.implicitWidth > textClip.width)
                     loops: Animation.Infinite
                     onRunningChanged: if (!running) rowText.x = 0
                     PauseAnimation { duration: 1500 }
@@ -215,11 +468,132 @@ FocusScope {
         }
     }
 
+    // A library's Continue Watching row. Focus stays on navList — the shelf is
+    // stepped from there — so it is told when it holds the selection.
+    Component {
+        id: shelfComponent
+
+        // No size here: the Loader already has one and resizes what it loads,
+        // which would only fight a binding set from in here.
+        PosterShelf {
+            // No heading: the spine at the front of the row is the library's
+            // name, and a heading over it would only be saying it again.
+            model: entry.items || []
+            highlighted: navList.currentIndex === entryIndex
+            showTitleLine: false
+
+            posterSource: browseRoot.posterFor
+            badgeSource: browseRoot.badgeFor
+            captionSource: browseRoot.captionFor
+            titleText: browseRoot.tileTitle
+            posterAspectFor: browseRoot.aspectFor
+
+            onMoved: {
+                browseRoot.shelfColumn = currentIndex
+                browseRoot.refreshSelected()
+            }
+            Component.onCompleted: {
+                currentIndex = Math.min(browseRoot.shelfColumn, Math.max(0, count - 1))
+                if (navList.currentIndex === entryIndex) browseRoot.refreshSelected()
+            }
+        }
+    }
+
+    // Body
+    ListView {
+        id: navList
+        model: navEntries
+        // Hidden until resolved: the entries are all plain nav rows until the
+        // probes land, and flashing a text menu before the shelves reads as a
+        // glitch rather than as loading.
+        visible: browseRoot.menuReady
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.topMargin: browseRoot.contentTop
+        anchors.leftMargin: root.sw * 0.115625 //74
+        width: root.sw * 0.76875 //492
+        height: browseRoot.contentH
+        clip: true
+        focus: true
+        // A shelf costs a row of poster requests, so only the entries on screen
+        // (plus the one being scrolled to) are ever built.
+        cacheBuffer: browseRoot.shelfEntryH
+
+        Keys.onUpPressed: {
+            if (count === 0) return
+            // Off the top of the list is the SERVER | PROFILE line in the corner,
+            // when this screen has one; otherwise the list wraps as it always has.
+            if (currentIndex === 0 && moduleRoot.focusStatus()) return
+            browseRoot.stepTo(currentIndex > 0 ? currentIndex - 1 : count - 1)
+        }
+        Keys.onDownPressed: {
+            if (count === 0) return
+            browseRoot.stepTo(currentIndex < count - 1 ? currentIndex + 1 : 0)
+        }
+        // Left and Right belong to the shelf, and to nothing else: they used to
+        // double as the server switch, which made every walk to the front of a
+        // shelf a near miss with leaving the screen. The switch is on the
+        // SERVER | PROFILE line in the corner instead, up from the top row.
+        Keys.onLeftPressed: {
+            var sh = browseRoot.currentShelf()
+            if (sh) sh.moveLeft()
+        }
+        Keys.onRightPressed: {
+            var sh = browseRoot.currentShelf()
+            if (sh) sh.moveRight()
+        }
+        Keys.onReturnPressed: {
+            var e = browseRoot.entryAt(currentIndex)
+            if (!e) return
+            if (e.kind === "shelf") {
+                var sh = browseRoot.currentShelf()
+                browseRoot.openShelfItem(e.lib, sh ? sh.currentItemData : null)
+                return
+            }
+            browseRoot.openLibrary(e.lib)
+        }
+        Keys.onPressed: function(event) {
+            if (event.key === Qt.Key_Escape || event.key === Qt.Key_Backspace || event.key === Qt.Key_Back) {
+                browseRoot.goBack()
+                event.accepted = true
+            }
+        }
+
+        delegate: Loader {
+            required property int index
+            required property var modelData
+
+            readonly property var entry: modelData
+            readonly property int entryIndex: index
+
+            width: navList.width
+            height: entry.kind === "shelf" ? browseRoot.shelfEntryH : browseRoot.rowH
+            sourceComponent: entry.kind === "shelf" ? shelfComponent : rowComponent
+        }
+    }
+
+    // Selected item's title: one line for the whole view rather than one per
+    // shelf, which would repeat the heading it sits under and name an item rows
+    // away from wherever the selection actually is.
+    MarqueeText {
+        visible: browseRoot.posterMenu
+        anchors.left: parent.left
+        anchors.bottom: footer.top
+        anchors.leftMargin: root.sw * 0.115625 //74
+        anchors.bottomMargin: root.sh * 0.0166667 //8
+        height: browseRoot.titleH
+        maxWidth: root.sw * 0.76875 //492
+        text: browseRoot.captionTitle(browseRoot.selectedItem)
+        color: root.primaryColor
+        font.family: root.globalFont
+        font.capitalization: Font.AllUppercase
+        font.pixelSize: root.sh * 0.0375 //18
+    }
+
     // Footer
     Text {
         id: footer
         text: root.hints.back + ":BACK " + root.hints.navigate + ":NAVIGATE " + root.hints.select + ":SELECT"
-              + (browseRoot.canSwitchServer ? " " + root.hints.change + ":SERVER" : "")
         color: root.tertiaryColor
         font.family: root.globalFont
         anchors.bottom: parent.bottom

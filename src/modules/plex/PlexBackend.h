@@ -23,6 +23,27 @@ public:
     Q_INVOKABLE void     build_stream_url(const QString &ratingKey,
                                           const QString &partKey,
                                           const QString &sessionId);
+    // Poster art URL for an item map (formatItem/buildItemDetail shape), sized
+    // by the server. Takes the whole item, not a thumb string, so the "which
+    // artwork for this type" rule lives in one place. Empty when the item has
+    // no art or no server is active — callers fall back to a text layout.
+    //
+    // context picks two independent things — which artwork an episode gets, and
+    // whether it is cropped to fill the box or fitted whole inside it:
+    //   "grid"   — its show's poster, cropped; a wall of cells reads as one shelf
+    //   "shelf"  — most specific art (own still → season → show), cropped
+    //   "detail" — the same most-specific art, fitted whole
+    //   "badge"  — the cover art *around* an episode (season, else show), never
+    //              its own still: the overlay that names the show
+    Q_INVOKABLE QString  poster_url(const QVariantMap &item, int width, int height,
+                                    const QString &context = QStringLiteral("grid")) const;
+
+    // The shape of the art poster_url would return for this item and context:
+    // 16:9 for an episode still, 2:3 for cover art. A shelf asks so it can cut
+    // each cell to its own art and crop nothing — which is why this has to come
+    // from here, where the fallback chain is, and not be guessed in QML.
+    Q_INVOKABLE double   poster_aspect(const QVariantMap &item,
+                                       const QString &context = QStringLiteral("grid")) const;
 
     // Auth flow
     Q_INVOKABLE void start_pin_auth();
@@ -169,7 +190,16 @@ private:
     // Convenience SSL-ignore connect
     void ignoreSslErrors(QNetworkReply *reply);
 
+    // Drops items belonging to a library the user has switched off in the
+    // Libraries setting. Server-wide endpoints (continue watching) answer for
+    // every section, so their results are filtered here.
+    QVariantList enabledLibraryItems(const QVariantList &items) const;
+
     // Auth state accessors (read from in-memory / file)
+    // Which of thumb / parentThumb / grandparentThumb poster_url would use.
+    // Empty when the item carries none of them.
+    QString artworkKey(const QVariantMap &item, const QString &context) const;
+
     QString serverUrl() const;
     QString serverToken() const;
     QString accountToken() const;
