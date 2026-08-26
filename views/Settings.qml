@@ -243,7 +243,8 @@ FocusScope {
         anchors.top: parent.top
         anchors.right: parent.right
         anchors.topMargin: root.sh * 0.125 //60
-        anchors.rightMargin: root.sw * 0.125 //80
+        // Stops short of the corner clock, which owns the right end of this row.
+        anchors.rightMargin: root.sw * 0.125 + root.cornerReserve //80 + corner
         font.pixelSize: root.sh * 0.0291667 //14
         color: root.tertiaryColor
         font.family: root.globalFont

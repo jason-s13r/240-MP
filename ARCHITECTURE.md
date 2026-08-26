@@ -140,8 +140,11 @@ A real example (Plex) — note `requires_auth`, dynamic options, and apply slots
 | `get_module_settings_schema(moduleId)` | Returns the module's settings array |
 | `invoke_module_action(moduleId, slotName)` | Routes to the registered backend via `QMetaObject::invokeMethod` |
 | `get_module_auth_state(moduleId)` | Returns the module's auth state (for `requires_auth` settings) |
+| `twelve_hour_clock()` | Whether every clock in the app reads 12-hour (see below) |
 | `getCustomColorScheme()` | Returns the user's custom color scheme |
 | `listDirectories(path)` / `parentDirectory(path)` / `homePath()` | Helpers for `directory_browser` |
+
+**The clock format is resolved in one place.** The app has no 12/24-hour setting of its own — the weather module owns the only `hours_format` there is — so `twelve_hour_clock()` answers for the whole app: an *enabled* module offering that setting speaks for it, 24-hour when none does. It finds that module by the setting key rather than by module id, so the id stays stated once (in `main.cpp`). `Main.qml` mirrors it as `root.twelveHour`, re-asking on any `moduleSettingChanged` for `hours_format` or `enabled`.
 
 ### Signals
 
@@ -593,6 +596,14 @@ QML fetches those images through the QML engine's own `QNetworkAccessManager`, w
 ## Components (WIP)
 
 Shared QML components live in `views/Components/` (registered via `qmldir`, imported as `import Components`).
+
+### Clock (`views/Components/Clock.qml`)
+
+The wall clock in the top-right corner. A VCR always shows the time, so it is instantiated **once in `Main.qml`**, over the module loader — every screen carries it without a view having to draw it. Minutes, not seconds: a per-second repaint on a Pi buys nothing, though the tick still runs each second so the display turns over *on* the minute. 12- or 24-hour follows `root.twelveHour`.
+
+It hides while something else owns the display — `root.displayOwned`, a guarded mirror of `idleTracker.mpvActive || idleTracker.scriptActive` alongside `hints` and `appVersion`, since binding those context properties directly throws a TypeError when the root context is invalidated. A weather forecast or a takeover script draws its own full screen, clock included.
+
+The clock and a screen's header share the top row, so `root.cornerReserve` (the clock's own width plus a gutter, and any status line beside it — therefore wider for `11:59 PM` than for `23:59`) is what anything at the right end of that row subtracts: `AppBar`'s width, and the IP address in `views/Settings.qml`.
 
 ### AppBar (`views/Components/AppBar.qml`)
 

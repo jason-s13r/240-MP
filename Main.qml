@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Window
+import Components
 
 Window {
     id: root
@@ -88,8 +89,14 @@ Window {
     property string surfaceColor:   (allThemes[currentTheme] || allThemes["Video 1"]).surface
     property string accentColor:    (allThemes[currentTheme] || allThemes["Video 1"]).accent
 
-    // The top row's right-hand corner, where a module may hang a status line of
-    // its own — the Plex module's SERVER | PROFILE.
+    // Whether every clock in the app reads 12-hour. Resolved once by AppCore and
+    // mirrored here so views bind root.twelveHour, never appCore.
+    property bool twelveHour: false
+
+    // The top row's right-hand corner. The clock sits on the right margin, on
+    // the vertical centre the playback OSD draws its own clock at
+    // (scripts/mpv-osc.lua), so the reading does not move when mpv takes the
+    // screen; a module may hang a status line of its own to the left of it.
     readonly property real cornerGap: root.sw * 0.025 //16
     readonly property real cornerMargin: root.sw * 0.12 //76.8
     readonly property real cornerCenterY: root.sh * 0.1260417 //60.5
@@ -99,13 +106,17 @@ Window {
     // into it.
     property real statusReserve: 0
 
-    // Where that line hangs: a module anchors to parent.right with this margin.
-    readonly property real statusMargin: root.cornerMargin
+    // Where that line hangs: clear of the clock. A module anchors to parent.right
+    // with this margin.
+    readonly property real statusMargin: root.cornerMargin + appClock.width + root.cornerGap
 
     // How much of the top row the corner takes, all told. A header sizes itself
-    // to what is left rather than running into it.
-    readonly property real cornerReserve:
-        root.statusReserve > 0 ? root.statusReserve + root.cornerGap : 0
+    // to what is left rather than running into it, and it moves with the reading
+    // — "11:59 PM" is wider than "23:59" — and with whatever is beside it.
+    readonly property real cornerReserve: appClock.width
+                                        + (root.statusReserve > 0
+                                           ? root.statusReserve + root.cornerGap : 0)
+                                        + root.cornerGap
 
     // Poster art feature switch, read by the media modules' browse and detail
     // views. Mirrors color_scheme: seeded in Component.onCompleted, kept live by
@@ -117,6 +128,13 @@ Window {
 
     Connections {
         target: appCore
+        // Enabling a module, or changing its hours format, can change the answer
+        // for the whole app — asked again rather than reasoned about here.
+        function onModuleSettingChanged(moduleId, key, value) {
+            if (key === "hours_format" || key === "enabled")
+                root.twelveHour = appCore.twelve_hour_clock()
+        }
+
         function onAppSettingChanged(key, value) {
             if (key === "color_scheme") {
                 root.currentTheme = value
@@ -157,6 +175,7 @@ Window {
         }
 
         root.posterGrid = ((cfg.app && cfg.app.poster_grid) || "Off") === "On"
+        root.twelveHour = appCore.twelve_hour_clock()
 
         var savedTheme = (cfg.app && cfg.app.color_scheme) || "Video 1"
         if (savedTheme === "Custom" && !root.allThemes["Custom"]) {
@@ -209,6 +228,11 @@ Window {
     // engine invalidates the root context itself.
     readonly property var hints: inputManager ? inputManager.hints : ({})
     readonly property string appVersion: appCore ? appCore.appVersion : ""
+    // True while something else owns the whole display: mpv playing, a weather
+    // forecast, a takeover script. The two flags the screen saver already reads,
+    // behind the same null guard as the mirrors above.
+    readonly property bool displayOwned:
+        idleTracker ? (idleTracker.mpvActive || idleTracker.scriptActive) : false
 
     // --- SCREEN SAVER STATE ---
     property bool screenSaverActive: false
@@ -309,6 +333,21 @@ Window {
             }
 
         }
+    }
+
+    // --- CLOCK ---
+    // Declared after the module loader so it sits over whatever view is up, and
+    // before the screen saver so the saver's black frame still covers it.
+    // Hidden while something else owns the display — a weather forecast or a
+    // takeover script draws its own full screen, clock included.
+    Clock {
+        id: appClock
+        visible: !root.displayOwned
+        // Placed where the OSD's own clock sits, so the time stays put when a
+        // video's OSD comes up over it.
+        anchors.right: parent.right
+        anchors.rightMargin: root.cornerMargin
+        y: root.cornerCenterY - height / 2
     }
 
     // --- SCREEN SAVER (Idle Tracker integration) ---

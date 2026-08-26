@@ -244,6 +244,30 @@ bool AppCore::is_module_enabled(const QString &moduleId) const {
     return false;
 }
 
+bool AppCore::twelve_hour_clock() const {
+    const QJsonObject modulesConfig = loadConfig()["modules"].toObject();
+    for (const ModuleEntry &m : m_modules) {
+        if (!isModuleEnabled(m, modulesConfig)) continue;
+        // The manifest default stands in until the user has saved a choice —
+        // the same resolution order isModuleEnabled() uses for "enabled".
+        QString fallback;
+        bool offersFormat = false;
+        for (const auto &sv : m.settings) {
+            const QVariantMap sm = sv.toMap();
+            if (sm["key"].toString() == QLatin1String("hours_format")) {
+                offersFormat = true;
+                fallback = sm["default"].toString();
+                break;
+            }
+        }
+        if (!offersFormat) continue;
+        QString fmt = modulesConfig[m.id].toObject()["hours_format"].toString();
+        if (fmt.isEmpty()) fmt = fallback;
+        if (fmt.startsWith(QLatin1String("12"))) return true;
+    }
+    return false;
+}
+
 QString AppCore::module_entry_point(const QString &moduleId) const {
     for (const auto &m : m_modules) {
         if (m.id == moduleId)

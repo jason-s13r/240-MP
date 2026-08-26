@@ -1,5 +1,6 @@
 module Components
 AppBar AppBar.qml
+Clock Clock.qml
 MarqueeText MarqueeText.qml
 NfcCardWriter NfcCardWriter.qml
 PosterCell PosterCell.qml

@@ -52,6 +52,12 @@ public:
     // resolves it (config override, else manifest default, else true). Unknown
     // ids are not enabled.
     Q_INVOKABLE bool is_module_enabled(const QString &moduleId) const;
+    // Whether the app's clocks read 12-hour. The app has no clock setting of its
+    // own — the weather module owns the only "Hours Format" there is — so an
+    // enabled module offering one speaks for the whole app; 24-hour when none
+    // does. Found by the setting key rather than by module id, so the id stays
+    // stated once (in main.cpp).
+    Q_INVOKABLE bool twelve_hour_clock() const;
     // APP_ROOT-relative QML entry point of a module by id ("modules/plex/views/Root.qml"),
     // or empty when the module is unknown. Lets one module route into another
     // without hardcoding a path across module boundaries.
