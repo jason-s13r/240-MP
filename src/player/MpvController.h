@@ -66,12 +66,45 @@ public:
     // posterAspect is the shape the art is drawn in, width over height: 0 keeps
     // the 2:3 of cover art; a module handing over something else says so (1 for
     // an avatar, 16/9 for a thumbnail) so the OSC reserves a box of that shape.
+    //
+    // fitPoster draws the art whole inside that box instead of cropping it to
+    // fill: cover art of any shape may lose its edges, but a station logo cannot
+    // — cropping a wide one to a square cuts the name out of it. The same rule
+    // the browse screen's logo cells follow.
+    //
+    // airingBeginsAt/airingEndsAt are when the programme runs from and to, as
+    // epoch seconds — the guide's window, which for a live channel is the only
+    // length there is. A file needs neither: mpv knows how long it is, and the
+    // OSC measures the seek bar, the two times and "ENDS 21:45" against that.
+    // A live stream has no length at all, so a channel hands over the window
+    // instead and the OSC measures the programme. Both 0 (the default) leaves
+    // the OSC reading mpv.
     Q_INVOKABLE void setNowPlaying(const QString &title,
                                    const QString &showTitle = {},
                                    const QString &posterUrl = {},
                                    const QString &contentRating = {},
                                    const QString &label = {},
-                                   double posterAspect = 0.0);
+                                   double posterAspect = 0.0,
+                                   bool fitPoster = false,
+                                   qint64 airingBeginsAt = 0,
+                                   qint64 airingEndsAt = 0);
+
+    // A title block that changes while one stream keeps playing: a live channel
+    // rolls from one programme to the next without mpv ever loading a file. The
+    // fields that can change with it, pushed to the OSC of the running player —
+    // the name, the mark, and the window it runs across. The art is not among
+    // them, because what it shows (the channel) has not changed. A no-op when
+    // nothing is playing.
+    //
+    // Also re-anchors where the stream sits inside the programme, which only
+    // this side can work out: it takes the wall clock and how far mpv has
+    // actually played, and mpv's clock is the one that stops when the viewer
+    // pauses. See the "join offset" note in the .cpp.
+    Q_INVOKABLE void updateNowPlaying(const QString &title,
+                                      const QString &showTitle = {},
+                                      const QString &contentRating = {},
+                                      qint64 airingBeginsAt = 0,
+                                      qint64 airingEndsAt = 0);
 
     // The server and profile the app's own corner shows on every browse screen.
     // Separate from setNowPlaying because it says nothing about the item — it is
@@ -182,7 +215,13 @@ private:
     QString       m_pendingRating;
     QString       m_pendingLabel;
     double        m_pendingPosterAspect = 0.0;
+    bool          m_pendingPosterFit    = false;
+    qint64        m_pendingAiringBegins = 0;
+    qint64        m_pendingAiringEndsAt = 0;
     QString       m_posterUrl;
+    // see setNowPlaying(); kept alongside m_posterUrl because the OSC asks for
+    // the art long after the launch that chose how to draw it
+    bool          m_posterFit  = false;
     // Bumped on every launch. A poster fetch that finishes after the next file
     // has started belongs to the file before it — autoplay swaps episodes
     // without restarting the app — so its reply is dropped rather than putting

@@ -123,6 +123,13 @@ public:
     // than a thumb string, matching poster_url.
     Q_INVOKABLE QString live_channel_logo_url(const QVariantMap &channel) const;
     Q_INVOKABLE void tune_channel(const QString &channelId, const QString &sessionId);
+    // What is on that channel right now, per the DVR's guide. Answers with
+    // liveProgrammeLoaded — an empty map when the guide lists nothing for the
+    // channel, so a caller can fall back to the channel's own name. Takes the
+    // channel map rather than an id, like live_channel_logo_url: which of the
+    // channel's names the guide files its airings under varies by EPG provider,
+    // so the match is tried against all of them.
+    Q_INVOKABLE void load_live_programme(const QVariantMap &channel);
     Q_INVOKABLE void update_live_timeline(const QString &state);
     // Stops the live transcode for sessionId and forgets the tuned key, so the
     // server can release the tuner. Called on exit and before a channel change.
@@ -170,6 +177,11 @@ signals:
     void cardError(const QString &message);
 
     void liveChannelsLoaded(const QVariant &channels);
+    // The airing on a live channel now: {title, showTitle, contentRating, endsAt},
+    // endsAt being epoch seconds so the caller knows when to ask again. Empty when
+    // the guide has nothing to say. Emitted by tune_channel for the airing it
+    // grabbed, and by every load_live_programme.
+    void liveProgrammeLoaded(const QVariant &programme);
 
     void dynamicOptionsReady(const QString &key, const QVariant &options);
 
@@ -210,6 +222,17 @@ private:
     QString userToken() const;
     QString videoQuality() const;
     QString clientId() const;   // UUID, stored in plex_auth.json
+
+    // Live TV guide helpers. fetchLiveProgramme is load_live_programme once the
+    // EPG provider is known; the other two read one guide airing.
+    void fetchLiveProgramme(const QString &providerId, const QVariantMap &channel);
+    // One EPG airing as liveProgrammeLoaded carries it. Empty when the object is
+    // not an airing (a tune that produced no listing, a stray container entry).
+    static QVariantMap airingProgramme(const QJsonObject &meta);
+    // Whether an airing is on the given channel. The guide names the channel on
+    // the airing's Media entries, under a field that differs between EPG
+    // providers, so any of them matching any of the channel's names is a match.
+    static bool airingIsOnChannel(const QJsonObject &meta, const QVariantMap &channel);
 
     // Item formatting helpers
     QVariantMap formatItem(const QJsonObject &m) const;
@@ -325,6 +348,9 @@ private:
     // the transcode session, and m_liveStartedMs gives the keep-alive an advancing
     // playback time.
     QString m_liveDvrId;
+    // The EPG media provider that proxies the lineup and guide routes, cached
+    // from whichever call last had to look it up.
+    QString m_liveProviderId;
     QString m_liveTimelineKey;
     QString m_liveRatingKey;
     QString m_liveSessionId;

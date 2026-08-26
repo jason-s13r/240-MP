@@ -191,6 +191,11 @@ local function build_left_btns(has_sub, has_pl, bar_w)
     return btns
 end
 
+-- How far into the thing being measured the stream itself starts: a Plex
+-- transcode resumed part-way through a file, or a live channel joined part-way
+-- through a programme. Added to mpv's clock it gives the real position. Not a
+-- constant for live — the app re-anchors it on each new programme (see the
+-- 240mp-nowplaying handler).
 local transcode_offset = tonumber(mp.get_opt("transcode-offset") or "0") or 0
 
 -- Latch duration on the first valid read of each file: when Plex restarts an HLS
@@ -472,12 +477,31 @@ local function draw_menu()
     end
 
     -- ── Row 1: Time text ──────────────────────────────────────────
-    local total    = stable_duration or (mp.get_property_number("duration", 0) or 0)
+    -- A live channel is measured against the guide's programme, because the
+    -- stream has no length of its own to measure against. Only the length comes
+    -- from the clock, though — the motion along it is still mpv's time-pos, so
+    -- pausing stops the bar. The programme does not pause with it, which is why
+    -- the app re-anchors transcode_offset rather than the script reading
+    -- os.time(): after a five-minute pause the viewer is five minutes further
+    -- behind the broadcast, not five minutes further through it.
+    local airing_begins = tonumber(nowplaying.beginsAt) or 0
+    local airing_ends   = tonumber(nowplaying.endsAt)   or 0
+    local airing_total  = (airing_begins > 0 and airing_ends > airing_begins)
+                          and (airing_ends - airing_begins) or 0
+
+    local total    = (airing_total > 0) and airing_total
+                     or (stable_duration or (mp.get_property_number("duration", 0) or 0))
     local time_pos = math.min(math.max(0, (mp.get_property_number("time-pos", 0) or 0) + transcode_offset), total)
     local percent  = (total > 0) and math.min(100, math.max(0, time_pos / total * 100)) or 0
 
     draw_text(ass, lm, row1_y, 4, format_time(time_pos), fs, C_WHITE, A_OPAQUE)
-    draw_text(ass, rm, row1_y, 6, format_time(total),    fs, C_WHITE, A_OPAQUE)
+    -- What a file has left to run is a fact about the file, so its length is what
+    -- the right-hand end says. A programme's is a countdown, so it is written as
+    -- one and the sign tells the two apart at a glance.
+    draw_text(ass, rm, row1_y, 6,
+              (airing_total > 0) and ("-" .. format_time(total - time_pos))
+                                 or format_time(total),
+              fs, C_WHITE, A_OPAQUE)
 
     -- Nothing else goes on this row: it is two readings of the same bar, and a
     -- name squeezed between them reads as a third one. What is playing is named
@@ -517,7 +541,14 @@ local function draw_menu()
 
     -- Left of STOP: when this finishes, as a wall-clock time. "45 MINUTES LEFT"
     -- is a number you have to do arithmetic on; "ENDS 21:45" is the answer.
-    -- Live TV and anything else with no duration gets nothing.
+    --
+    -- Now plus what is left to run, which is the one form that stays true while
+    -- paused: a film held for ten minutes finishes ten minutes later, and so
+    -- does a live programme — pausing puts the viewer that far behind the
+    -- broadcast, so they reach the end of it that much after it airs. Drawing
+    -- the guide's own end time instead would be right only until the first
+    -- pause. A live channel reaches this line at all because `total` is the
+    -- programme's length by then; a stream with no length still gets nothing.
     local stop_x = rm - stop_w
     if total > 0 then
         local end_x  = stop_x - btn_gap
@@ -668,6 +699,27 @@ mp.register_script_message("240mp-poster-ready", function(file, w, h, stride)
         return
     end
     mp.msg.info(string.format("poster ready %dx%d stride %d", poster.w, poster.h, poster.stride))
+end)
+
+-- The app replacing the title block on a stream that never restarts: a live
+-- channel moving from one programme to the next. Only the text changes — the art
+-- beside it belongs to the channel, not to what is on it, so the overlay stands.
+mp.register_script_message("240mp-nowplaying", function(title, show, rating,
+                                                        begins_at, ends_at, offset)
+    nowplaying.title    = title  or ""
+    nowplaying.show     = show   or ""
+    nowplaying.rating   = rating or ""
+    -- Every script-message argument is a string; tonumber gives back the same
+    -- values the JSON file carried, and 0 for a caller that sent none.
+    nowplaying.beginsAt = tonumber(begins_at) or 0
+    nowplaying.endsAt   = tonumber(ends_at)   or 0
+    -- Re-anchored against the new programme's start, never accumulated: mpv's
+    -- clock runs straight through the change, so the offset that put the stream
+    -- inside the old programme would put it an hour into the new one. Only when
+    -- a window came with it, or a file resumed part-way through would lose the
+    -- offset it launched with.
+    if nowplaying.beginsAt > 0 then transcode_offset = tonumber(offset) or 0 end
+    if menu_visible then draw_menu() end
 end)
 
 -- The volume bar (mpv-media-keys.lua) broadcasts this when it appears; close the

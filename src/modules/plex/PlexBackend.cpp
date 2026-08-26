@@ -2657,6 +2657,7 @@ void PlexBackend::load_live_channels() {
                 emit liveChannelsLoaded(QVariantList{});
                 return;
             }
+            m_liveProviderId = providerId;
 
             auto *chReply = plexGet(QUrl(uri + "/" + providerId + "/lineups/dvr/channels"), token);
             connect(chReply, &QNetworkReply::finished, this, [this, chReply]() {
@@ -2678,6 +2679,9 @@ void PlexBackend::load_live_channels() {
                         {"channelId", id},
                         {"number",    number},
                         {"title",     name.toUpper()},
+                        // Never shown: it is one of the names the guide may file
+                        // this channel's airings under (see airingIsOnChannel).
+                        {"callSign",  c["callSign"].toString()},
                         // The station's logo, where the EPG carries one.
                         // Resolved to a URL by live_channel_logo_url().
                         {"thumb",     c["thumb"].toString()},
@@ -2762,6 +2766,21 @@ void PlexBackend::tune_channel(const QString &channelId, const QString &sessionI
         m_liveSessionId   = sessionId;
         m_liveStartedMs   = QDateTime::currentMSecsSinceEpoch();
 
+        // The grab's Metadata names the airing, and that name costs no second
+        // request — so it is taken, and it is right. Its window is not: the
+        // beginsAt/endsAt on a grab's Media entry describe the block the tuner
+        // is grabbing, not the listing. A programme running 21:30 to 22:30 came
+        // back ending at 22:00, and the OSD said so. The end time is dropped
+        // here and the guide asked for the real one, which is what "according
+        // to the guide" has to mean. Emitted even when it parses to nothing, so
+        // the player knows to name the channel instead.
+        QVariantMap grabbed = airingProgramme(meta);
+        if (!grabbed.isEmpty()) {
+            grabbed["beginsAt"] = 0;
+            grabbed["endsAt"]   = 0;
+        }
+        emit liveProgrammeLoaded(grabbed);
+
         // Start the HLS transcode against the tuned path. Reuses the universal
         // transcoder + master-m3u8 parse from request_transcode.
         QString uri = serverUrl(), token = serverToken();
@@ -2811,6 +2830,145 @@ void PlexBackend::tune_channel(const QString &channelId, const QString &sessionI
             qDebug() << "[Plex] Live stream URL for mpv:" << streamUrl;
             emit streamUrlReady(streamUrl, token);
         });
+    });
+}
+
+QVariantMap PlexBackend::airingProgramme(const QJsonObject &meta) {
+    const QString title = meta["title"].toString().trimmed();
+    if (title.isEmpty()) return {};
+
+    // An episode names its show; a film or a one-off names only itself, and a
+    // guide that repeats the title as the show name is saying it twice.
+    QString show = meta["grandparentTitle"].toString().trimmed();
+    if (show.compare(title, Qt::CaseInsensitive) == 0) show.clear();
+
+    // beginsAt/endsAt live on the airing's Media entry, and real servers send
+    // them as epoch seconds in either a number or a string (the bundled openapi
+    // has one example of each) — toVariant() reads both. The pair is the window
+    // the programme runs across: its length, how far through it the viewer is,
+    // and when to ask the guide what replaced it. Half a window is none, save
+    // that an end time alone still says when to look again.
+    const QJsonArray media = meta["Media"].toArray();
+    const QJsonObject m = media.isEmpty() ? QJsonObject{} : media[0].toObject();
+    qint64 beginsAt = m["beginsAt"].toVariant().toLongLong();
+    const qint64 endsAt = m["endsAt"].toVariant().toLongLong();
+    if (endsAt <= beginsAt) beginsAt = 0;
+
+    return QVariantMap{
+        {"title",         title},
+        {"showTitle",     show},
+        {"contentRating", meta["contentRating"].toString()},
+        {"beginsAt",      beginsAt},
+        {"endsAt",        endsAt},
+    };
+}
+
+bool PlexBackend::airingIsOnChannel(const QJsonObject &meta, const QVariantMap &channel) {
+    QStringList wanted;
+    for (const char *key : {"channelId", "number", "callSign"}) {
+        const QString v = channel.value(QLatin1String(key)).toString().trimmed();
+        if (!v.isEmpty()) wanted << v;
+    }
+    if (wanted.isEmpty()) return false;
+
+    for (const auto &mv : meta["Media"].toArray()) {
+        const QJsonObject m = mv.toObject();
+        for (const char *key : {"channelIdentifier", "channelVcn",
+                                "channelCallSign", "channelID"}) {
+            const QString have = m[QLatin1String(key)].toVariant().toString().trimmed();
+            if (have.isEmpty()) continue;
+            for (const QString &w : std::as_const(wanted))
+                if (have.compare(w, Qt::CaseInsensitive) == 0) return true;
+        }
+    }
+    return false;
+}
+
+void PlexBackend::load_live_programme(const QVariantMap &channel) {
+    if (channel.isEmpty()) { emit liveProgrammeLoaded(QVariantMap{}); return; }
+    if (!m_liveProviderId.isEmpty()) { fetchLiveProgramme(m_liveProviderId, channel); return; }
+
+    // Nothing has looked the EPG provider up yet this session — a card or a
+    // deep link can reach the player without passing through the channel list.
+    const QString uri = serverUrl(), token = serverToken();
+    if (uri.isEmpty()) { emit liveProgrammeLoaded(QVariantMap{}); return; }
+    auto *provReply = plexGet(QUrl(uri + "/media/providers"), token);
+    connect(provReply, &QNetworkReply::finished, this, [this, provReply, channel]() {
+        provReply->deleteLater();
+        if (provReply->error() != QNetworkReply::NoError) {
+            qDebug() << "[Plex] Guide provider lookup failed:" << provReply->errorString();
+            emit liveProgrammeLoaded(QVariantMap{});
+            return;
+        }
+        const QJsonArray providers = QJsonDocument::fromJson(provReply->readAll())
+                                     .object()["MediaContainer"].toObject()["MediaProvider"].toArray();
+        for (const auto &pv : providers) {
+            const QJsonObject p = pv.toObject();
+            if (p["protocols"].toString().contains("livetv")) {
+                m_liveProviderId = p["identifier"].toString();
+                break;
+            }
+        }
+        if (m_liveProviderId.isEmpty()) { emit liveProgrammeLoaded(QVariantMap{}); return; }
+        fetchLiveProgramme(m_liveProviderId, channel);
+    });
+}
+
+void PlexBackend::fetchLiveProgramme(const QString &providerId, const QVariantMap &channel) {
+    const QString uri = serverUrl(), token = serverToken();
+    if (uri.isEmpty()) { emit liveProgrammeLoaded(QVariantMap{}); return; }
+
+    // The guide grid through the same provider proxy the lineup came from,
+    // narrowed server-side to the airings on right now: everything that comes
+    // back has begun and has not ended, so finding this channel's row in it is
+    // all that is left. The comparisons are Plex's own query syntax and belong
+    // to the key, not the value — QUrlQuery has no way to say that, hence a
+    // query string written out in full.
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    QUrl url(uri + "/" + providerId + "/grid");
+    // No type filter: an airing is a film on one channel and an episode on the
+    // next, and a guide narrowed to one of them would silently lose the other.
+    url.setQuery(QStringLiteral("sort=beginsAt&endsAt>=%1&beginsAt<=%1"
+                                "&X-Plex-Container-Start=0&X-Plex-Container-Size=400")
+                 .arg(now));
+
+    auto *reply = plexGet(url, token);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, providerId, channel]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 498) {
+                handle498([this, providerId, channel]{ fetchLiveProgramme(providerId, channel); });
+                return;
+            }
+            // Not an errorOccurred: a guide the server will not serve costs the
+            // OSD a programme name, and nothing else. The channel still plays.
+            qDebug() << "[Plex] Live guide fetch failed:" << reply->errorString();
+            emit liveProgrammeLoaded(QVariantMap{});
+            return;
+        }
+        const QByteArray body = reply->readAll();
+        const QJsonArray airings = QJsonDocument::fromJson(body)
+                                   .object()["MediaContainer"].toObject()["Metadata"].toArray();
+        for (const auto &av : airings) {
+            const QJsonObject meta = av.toObject();
+            if (!airingIsOnChannel(meta, channel)) continue;
+            const QVariantMap p = airingProgramme(meta);
+            // Logged because this is the only window the OSD trusts, off a route
+            // the server does not document: one line says whether the guide and
+            // the screen agree.
+            qDebug().noquote() << "[Plex] Guide:" << p.value("title").toString()
+                     << "on" << channel.value("title").toString()
+                     << QDateTime::fromSecsSinceEpoch(p.value("beginsAt").toLongLong())
+                        .toString(QStringLiteral("hh:mm")) << "-"
+                     << QDateTime::fromSecsSinceEpoch(p.value("endsAt").toLongLong())
+                        .toString(QStringLiteral("hh:mm"));
+            emit liveProgrammeLoaded(p);
+            return;
+        }
+        qDebug() << "[Plex] Guide lists nothing on air for channel"
+                 << channel.value("channelId").toString()
+                 << "(" << airings.size() << "airings) — raw:" << body.left(800);
+        emit liveProgrammeLoaded(QVariantMap{});
     });
 }
 

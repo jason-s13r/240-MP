@@ -7,6 +7,8 @@
 #include "../net/AppNamFactory.h"
 #include <QCoreApplication>
 #include <QImage>
+#include <QPainter>
+#include <QColor>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -290,6 +292,7 @@ void MpvController::loadAndPlay(const QString &url, float startSeconds,
     QFile::remove(m_nowPlayingPath);
     QFile::remove(m_posterDataPath);
     m_posterUrl = m_pendingPosterUrl;
+    m_posterFit = m_pendingPosterFit;
     ++m_playSession;
     if (!m_pendingTitle.isEmpty() || !m_pendingShowTitle.isEmpty()
         || !m_pendingServer.isEmpty() || !m_pendingProfile.isEmpty()) {
@@ -301,6 +304,11 @@ void MpvController::loadAndPlay(const QString &url, float startSeconds,
             {"label",  m_pendingLabel},
             // Shape of the art, width over height. Absent means cover art.
             {"aspect", m_pendingPosterAspect},
+            // The programme's window as epoch seconds: what the bar, the two
+            // times and the ENDS line measure when the stream has no length of
+            // its own. Both 0 leaves the OSC reading mpv — see setNowPlaying.
+            {"beginsAt", m_pendingAiringBegins},
+            {"endsAt",   m_pendingAiringEndsAt},
             // The corner strip, drawn beside the OSC's clock exactly as the app
             // draws it beside its own.
             {"server",  m_pendingServer},
@@ -343,6 +351,9 @@ void MpvController::loadAndPlay(const QString &url, float startSeconds,
     m_pendingRating.clear();
     m_pendingLabel.clear();
     m_pendingPosterAspect = 0.0;
+    m_pendingPosterFit    = false;
+    m_pendingAiringBegins = 0;
+    m_pendingAiringEndsAt = 0;
     m_pendingServer.clear();
     m_pendingProfile.clear();
 
@@ -549,7 +560,9 @@ void MpvController::sendKey(const QString &key) {
 void MpvController::setNowPlaying(const QString &title, const QString &showTitle,
                                   const QString &posterUrl,
                                   const QString &contentRating,
-                                  const QString &label, double posterAspect) {
+                                  const QString &label, double posterAspect,
+                                  bool fitPoster,
+                                  qint64 airingBeginsAt, qint64 airingEndsAt) {
     m_pendingTitle     = title;
     m_pendingShowTitle = showTitle;
     m_pendingPosterUrl = posterUrl;
@@ -560,6 +573,40 @@ void MpvController::setNowPlaying(const QString &title, const QString &showTitle
     // ("AC/DC LIVE") is a name, not a region.
     m_pendingLabel        = label.trimmed();
     m_pendingPosterAspect = posterAspect;
+    m_pendingPosterFit    = fitPoster;
+    m_pendingAiringBegins = airingBeginsAt;
+    m_pendingAiringEndsAt = airingEndsAt;
+}
+
+void MpvController::updateNowPlaying(const QString &title, const QString &showTitle,
+                                     const QString &contentRating,
+                                     qint64 airingBeginsAt, qint64 airingEndsAt) {
+    // The join offset: how far into the programme the stream sits, over and above
+    // what mpv has played. Added to mpv's own clock it gives the position within
+    // the programme, which is exactly how the OSC already reads a file that
+    // started part-way in (see transcode-offset), so the same arithmetic serves
+    // both.
+    //
+    // Worked out here rather than in the script because only this side has both
+    // halves, and because the script must not simply read the wall clock: pausing
+    // a live stream does not pause the programme, but it does stop the viewer
+    // moving through it. mpv's clock is the one that stops with them, so it
+    // carries the motion and this offset is a constant until the programme
+    // changes — at which point a new one re-anchors against the new start.
+    double joinOffset = 0.0;
+    if (airingBeginsAt > 0)
+        joinOffset = double(QDateTime::currentSecsSinceEpoch() - airingBeginsAt)
+                     - m_position / 1000.0;
+
+    // The OSC read the title block from a file once, at startup; there is no
+    // second read, so a change is pushed to it. Region-qualified certificates are
+    // trimmed the same way setNowPlaying trims them. The numbers cross as strings
+    // because a script-message carries nothing else; the script reads them back
+    // with tonumber.
+    sendCommand({"script-message", "240mp-nowplaying", title, showTitle,
+                 contentRating.section(QLatin1Char('/'), -1).trimmed(),
+                 QString::number(airingBeginsAt), QString::number(airingEndsAt),
+                 QString::number(joinOffset, 'f', 3)});
 }
 
 void MpvController::setNowPlayingSource(const QString &server, const QString &profile) {
@@ -599,13 +646,30 @@ void MpvController::requestPoster(int width, int height) {
             || !img.loadFromData(reply->readAll()))
             return;
 
-        // Cover-crop to the box the OSC asked for, so cover art of any shape
-        // fills it without being squashed.
-        const QImage scaled = img.scaled(width, height, Qt::KeepAspectRatioByExpanding,
-                                          Qt::SmoothTransformation);
-        QImage out = scaled.copy((scaled.width()  - width)  / 2,
-                                 (scaled.height() - height) / 2, width, height)
-                           .convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        QImage out;
+        if (m_posterFit) {
+            // Whole inside the box rather than cropped to fill it — see
+            // setNowPlaying's fitPoster. What is left over is not left showing
+            // the video: a station logo is a transparent PNG, and the OSC cuts
+            // its scrim away over the art, so undimmed frame would come through
+            // around it. It is backed a shade off black instead, the same neutral
+            // lift the browse screen's logo cells sit on.
+            const QImage fitted = img.scaled(width, height, Qt::KeepAspectRatio,
+                                             Qt::SmoothTransformation);
+            out = QImage(width, height, QImage::Format_ARGB32_Premultiplied);
+            out.fill(QColor(23, 23, 23));
+            QPainter p(&out);
+            p.drawImage((width  - fitted.width())  / 2,
+                        (height - fitted.height()) / 2, fitted);
+        } else {
+            // Cover-crop to the box the OSC asked for, so cover art of any shape
+            // fills it without being squashed.
+            const QImage scaled = img.scaled(width, height, Qt::KeepAspectRatioByExpanding,
+                                              Qt::SmoothTransformation);
+            out = scaled.copy((scaled.width()  - width)  / 2,
+                              (scaled.height() - height) / 2, width, height)
+                        .convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        }
 
         // Faded here rather than by the OSC: mpv's overlay has no opacity of its
         // own, and the poster is a backdrop for the title beside it, not a second
