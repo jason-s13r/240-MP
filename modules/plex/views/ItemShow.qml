@@ -60,7 +60,7 @@ FocusScope {
             if (!showRoot.waitingForOnDeck) return
             showRoot.waitingForOnDeck = false
             if (episodeItem && episodeItem.ratingKey) {
-                // Found an in-progress episode — RSUM it directly
+                // Found an in-progress episode — RESUME it directly
                 showRoot.navigateTo("Item.qml", { item: episodeItem, libraryName: showRoot.libraryName }, {})
             } else {
                 // No in-progress episode — fall back to first-unwatched logic
@@ -243,7 +243,7 @@ FocusScope {
             Column {
                 width: root.sw * 0.1875 //120
 
-                // PLAY / RSUM button
+                // PLAY / RESUME button
                 Rectangle {
                     id: playButton
                     color: focusRow === 0 ? root.accentColor : root.surfaceColor
@@ -254,7 +254,7 @@ FocusScope {
 
                     Text {
                         anchors.centerIn: parent
-                        text: (item.viewOffset && item.viewOffset > 0) ? "RSUM \u25BA" : "PLAY \u25BA"
+                        text: (item.viewOffset && item.viewOffset > 0) ? "RESUME \u25BA" : "PLAY \u25BA"
                         color: focusRow === 0 ? root.surfaceColor : root.primaryColor
                         font.family: root.globalFont
                         font.pixelSize: root.sh * 0.05 //24

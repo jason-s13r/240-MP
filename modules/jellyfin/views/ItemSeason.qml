@@ -148,7 +148,7 @@ FocusScope {
             height: root.sh * 0.175 //84
             spacing: root.sw * 0.0375 //24
 
-            // PLAY / RSUM button
+            // PLAY / RESUME button
             Rectangle {
                 id: playButton
                 color: focusRow === 0 ? root.accentColor : root.surfaceColor
@@ -161,7 +161,7 @@ FocusScope {
                     anchors.centerIn: parent
                     text: {
                         for (var i = 0; i < seasonRoot.episodes.length; i++) {
-                            if (seasonRoot.episodes[i].viewOffset > 0) return "RSUM ►"
+                            if (seasonRoot.episodes[i].viewOffset > 0) return "RESUME ►"
                         }
                         return "PLAY ►"
                     }

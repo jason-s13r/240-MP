@@ -329,7 +329,7 @@ FocusScope {
             Column {
                 width: root.sw * 0.1875 //120
 
-                // PLAY / RSUM button
+                // PLAY / RESUME button
                 Rectangle {
                     id: playButton
                     color: focusRow === 0 ? root.accentColor : root.surfaceColor
@@ -340,7 +340,7 @@ FocusScope {
 
                     Text {
                         anchors.centerIn: parent
-                        text: (detail && detail.viewOffset > 0) ? "RSUM \u25BA" : "PLAY \u25BA"
+                        text: (detail && detail.viewOffset > 0) ? "RESUME \u25BA" : "PLAY \u25BA"
                         color: focusRow === 0 ? root.surfaceColor : root.primaryColor
                         font.family: root.globalFont
                         font.pixelSize: root.sh * 0.05 //24

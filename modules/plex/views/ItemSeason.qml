@@ -224,7 +224,7 @@ FocusScope {
             Column {
                 width: root.sw * 0.1875 //120
 
-                // PLAY / RSUM button
+                // PLAY / RESUME button
                 Rectangle {
                     id: playButton
                     color: focusRow === 0 ? root.accentColor : root.surfaceColor
@@ -236,9 +236,9 @@ FocusScope {
                     Text {
                         anchors.centerIn: parent
                         text: {
-                            // Show RSUM if any in-progress episode exists
+                            // Show RESUME if any in-progress episode exists
                             for (var i = 0; i < seasonRoot.episodes.length; i++) {
-                                if (seasonRoot.episodes[i].viewOffset > 0) return "RSUM \u25BA"
+                                if (seasonRoot.episodes[i].viewOffset > 0) return "RESUME \u25BA"
                             }
                             return "PLAY \u25BA"
                         }
