@@ -223,14 +223,20 @@ int main(int argc, char *argv[]) {
     inputManager.setTargetWindow(qobject_cast<QQuickWindow *>(engine.rootObjects().first()));
 
 #ifdef Q_OS_MAC
-    if (QWindow *win = qobject_cast<QWindow *>(engine.rootObjects().first())) {
-        // Move the window onto the target screen before forcing fullscreen, so
-        // both Qt's and AppKit's notion of the window's screen agree.
-        if (targetScreen)
-            win->setScreen(targetScreen);
-        win->setGeometry(screenGeo);
-        win->winId(); // ensure native NSWindow is created
-        forceWindowFullScreenOnScreen(reinterpret_cast<void *>(win->winId()), displayIndex);
+    // Cocoa only: winId() on a headless platform plugin ("offscreen", "minimal",
+    // which is how the app is run under test) is not an NSView, and handing that
+    // to AppKit segfaults rather than being caught by the null check on the far
+    // side, which only ever sees a non-null handle.
+    if (QGuiApplication::platformName() == QLatin1String("cocoa")) {
+        if (QWindow *win = qobject_cast<QWindow *>(engine.rootObjects().first())) {
+            // Move the window onto the target screen before forcing fullscreen,
+            // so both Qt's and AppKit's notion of the window's screen agree.
+            if (targetScreen)
+                win->setScreen(targetScreen);
+            win->setGeometry(screenGeo);
+            win->winId(); // ensure native NSWindow is created
+            forceWindowFullScreenOnScreen(reinterpret_cast<void *>(win->winId()), displayIndex);
+        }
     }
 #elif defined(Q_OS_LINUX)
     // Desktop Linux (Steam Deck desktop mode, generic x86_64) only: EGLFS has
