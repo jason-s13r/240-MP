@@ -63,6 +63,10 @@ public:
     // with no certificate (YouTube names the playlist there). A rating wins if
     // both are set.
     //
+    // The art is shown only while the app-level "Poster Grid" setting is on —
+    // with it off nothing in the app draws cover art, the OSD included — so a
+    // caller hands over whatever it has and the controller decides.
+    //
     // posterAspect is the shape the art is drawn in, width over height: 0 keeps
     // the 2:3 of cover art; a module handing over something else says so (1 for
     // an avatar, 16/9 for a thumbnail) so the OSC reserves a box of that shape.
@@ -177,6 +181,9 @@ private:
     // App-level "auto_crop" setting (default OFF). When ON, playback starts with
     // panscan=1 so video fills a CRT/4:3 screen by default (still toggleable live).
     bool autoCropEnabled() const;
+    // App-level "poster_grid" setting (default OFF). When OFF the app browses as
+    // text with no cover art, and the OSD's title block drops its art to match.
+    bool posterGridEnabled() const;
     // True when the active decode path can't crop (Pi 3 overlay path with smooth
     // playback ON): --panscan blanks the video there. Gates auto-crop and tells
     // the OSC scripts to hide their CROP button.

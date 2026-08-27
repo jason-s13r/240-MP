@@ -291,7 +291,11 @@ void MpvController::loadAndPlay(const QString &url, float startSeconds,
     // comma-free, so it travels in the list safely.
     QFile::remove(m_nowPlayingPath);
     QFile::remove(m_posterDataPath);
-    m_posterUrl = m_pendingPosterUrl;
+    // The art rides on the Poster Grid setting: with it off the app browses as
+    // text and shows no cover art anywhere, and the OSD is no exception. Dropped
+    // here rather than at each caller so every module obeys it — an empty URL
+    // clears the "poster" flag below, so the OSC never asks for one either.
+    m_posterUrl = posterGridEnabled() ? m_pendingPosterUrl : QString();
     m_posterFit = m_pendingPosterFit;
     ++m_playSession;
     if (!m_pendingTitle.isEmpty() || !m_pendingShowTitle.isEmpty()
@@ -953,6 +957,15 @@ bool MpvController::autoCropEnabled() const {
     if (!m_appCore)
         return false;
     const QVariant v = m_appCore->get_setting(QString(), "auto_crop");
+    return v.toString().compare(QStringLiteral("On"), Qt::CaseInsensitive) == 0;
+}
+
+bool MpvController::posterGridEnabled() const {
+    // Default OFF: only an explicit "On" opts in. Stored by Settings as a string
+    // ("On"/"Off") via the list_single row, so compare on the string form.
+    if (!m_appCore)
+        return false;
+    const QVariant v = m_appCore->get_setting(QString(), "poster_grid");
     return v.toString().compare(QStringLiteral("On"), Qt::CaseInsensitive) == 0;
 }
 
