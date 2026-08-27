@@ -164,6 +164,15 @@ FocusScope {
         }
     }
 
+    // How much of each video has been watched, for the rule along the foot of
+    // its thumbnail — the same reading the module's menu shelves draw.
+    function videoProgressFor(item) {
+        var rev = metaRev // dependency: re-runs when a duration probe lands
+        if (!item || tileOf(item) || rev < 0 || !youtubeBackend)
+            return 0
+        return youtubeBackend.video_progress(item.videoId || "")
+    }
+
     // A card is never wider than the cells it stands in front of, so it takes
     // the 2:3 of cover art rather than the 16:9 of the thumbnails beside it —
     // the rule modules/plex/views/Libraries.qml states for its tiles.
@@ -279,6 +288,7 @@ FocusScope {
         badgeSource: playlistsRoot.videoBadgeFor
         badgeAspect: 1 // a channel avatar is a square
         captionSource: playlistsRoot.videoCaptionFor
+        progressSource: playlistsRoot.videoProgressFor
         titleText: playlistsRoot.cellTitle
 
         onActivated: function(item) { playlistsRoot.openShelfItem(item) }

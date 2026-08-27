@@ -45,6 +45,18 @@ FocusScope {
         if (!rowArt || !m || !youtubeBackend) return ""
         return youtubeBackend.video_thumb_url(m.videoId || "")
     }
+    // How much of a row's video has been watched, for the rule along the foot of
+    // its thumbnail — the same reading the shelves draw, at row size. Reads
+    // metaRev because a runtime landing is what turns a saved position into a
+    // fraction (see YouTubeBackend::video_progress).
+    function rowProgressFor(m) {
+        var rev = metaRev // dependency: re-runs when a duration probe lands
+        if (!rowArt || !m || rev < 0 || !youtubeBackend) return 0
+        return youtubeBackend.video_progress(m.videoId || "")
+    }
+    // Two pixels, as on a shelf cell: the bar is the same mark whatever it is
+    // drawn on, and at this size anything thicker is a band across the picture.
+    readonly property real rowProgressH: root.sh * 0.0041667 //2
 
     // Runtime and age, under every row's title. A feed knows neither, so both
     // land late and metaLine() reads metaRev to re-run. Worded by the backend,
@@ -452,6 +464,32 @@ FocusScope {
                 sourceSize.width: itemsRoot.rowArtW
                 sourceSize.height: itemsRoot.rowArtH
                 anchors.verticalCenter: parent.verticalCenter
+            }
+
+            // Along the foot of that thumbnail, as far as the picture itself
+            // runs: the slot is a fixed box and the frame is fitted inside it,
+            // so the bar is measured off what was painted rather than off the
+            // slot, which would leave it hanging past the picture's edges.
+            Item {
+                readonly property real fraction: itemsRoot.rowProgressFor(modelData)
+                visible: rowThumb.visible && fraction > 0
+                width: rowThumb.paintedWidth
+                height: itemsRoot.rowProgressH
+                x: rowThumb.x + (rowThumb.width - rowThumb.paintedWidth) / 2
+                y: rowThumb.y + (rowThumb.height + rowThumb.paintedHeight) / 2 - height
+
+                Rectangle {
+                    anchors.fill: parent
+                    color: root.watchedInk
+                    opacity: 0.35
+                }
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: parent.width * Math.min(1, parent.fraction)
+                    color: root.watchedInk
+                }
             }
 
             // Vertical stack for Subtitle and Title

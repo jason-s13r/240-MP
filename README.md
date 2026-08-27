@@ -113,7 +113,7 @@ Watch on YouTube: https://youtu.be/r-gylGDoELY
 - Browse videos by Channel
 - Save to a local Watch Later list
 - View your local Watch History
-- Resume Playback
+- Resume Playback, with a bar along the foot of a part-watched video's thumbnail showing how much was played
 - Set Playback Resolution: 480p (default and good for the RaspberryPi), 720p and 1080p
 - Choose to Display Shorts or not (default is On)
 

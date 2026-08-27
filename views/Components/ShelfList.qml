@@ -21,6 +21,8 @@ FocusScope {
     property var badgeSource: null
     property real badgeAspect: 2 / 3
     property var captionSource: null
+    // See PosterShelf.progressSource — how much of each item has been watched.
+    property var progressSource: null
 
     // One shelf's slot: heading, gap, art, and the ring the cells add above and
     // below. The art height is shared by every shelf in the app whichever shape
@@ -133,6 +135,7 @@ FocusScope {
             badgeSource: shelfListRoot.badgeSource
             badgeAspect: shelfListRoot.badgeAspect
             captionSource: shelfListRoot.captionSource
+            progressSource: shelfListRoot.progressSource
 
             Component.onCompleted: {
                 currentIndex = Math.min(shelfListRoot.column, Math.max(0, count - 1))

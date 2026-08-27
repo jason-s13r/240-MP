@@ -125,8 +125,6 @@ int main(int argc, char *argv[]) {
               g.width(), g.height(), g.x(), g.y());
     }
 
-    QQmlApplicationEngine engine;
-
     AppCore             appCore(appRoot, dataRoot);
 
     // Which physical display the UI launches on. App-level "display_index"
@@ -173,6 +171,14 @@ int main(int argc, char *argv[]) {
     // gamepad actions bypass QML and drive mpv directly over IPC.
     QObject::connect(&inputManager, &InputManager::mpvKeyRequested,
                      &mpvController, &MpvController::sendKey);
+
+    // Declared after everything it is about to be handed, so that on the way out
+    // it goes first. These are all stack objects and C++ unwinds in reverse: an
+    // engine built before the backends would outlive them, and a scene still
+    // standing over context properties that have gone null throws a TypeError
+    // from every binding that touches one — pages of them at exit. Built last,
+    // the scene comes down while the backends it calls into are all still there.
+    QQmlApplicationEngine engine;
 
     // Each module backend is wired in one call: stored for action routing, exposed to QML
     // under its context-property name, and its optional signals/slots connected by

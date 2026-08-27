@@ -37,6 +37,18 @@ Item {
     // a host sets one or the other, never both.
     property string cornerTagLabel: ""
 
+    // How much of this has been watched, 0..1 — a rule along the foot of the
+    // artwork, the reading YouTube itself puts there. 0 draws nothing, so a
+    // host with no such thing to say passes nothing and the cell is unchanged.
+    property real progress: 0
+    // The app's one un-themed ink; a host may still override it per cell.
+    property color progressInk: root.watchedInk
+    // Two pixels at 480p, where the whole cell is 75 tall. The track is the
+    // same ink held back rather than a border and an inset fill, exactly as the
+    // live guide's ProgressLine is drawn, for the same reason: at this height
+    // the border would be the whole of it.
+    readonly property real progressH: root.sh * 0.0041667 //2
+
     // The artwork is a logo rather than cover art — a station's mark, drawn on
     // whatever canvas the broadcaster chose and meaning nothing with its ends
     // cropped off. Fitted whole instead of cropped to fill, and held off the
@@ -61,6 +73,11 @@ Item {
     // Everything laid over the artwork is held this far off the edge it sits
     // against, so nothing reads as cut off by the cell's own edge.
     readonly property real inset: root.sh * 0.0020833 //1
+    // What the bottom row of overlays stands on: the cell's own edge, or the
+    // top of the bar when there is one. The bar spans the full width, so the
+    // badge and the caption lines step up over it rather than through it.
+    readonly property real bottomInset: inset + (progressVisible ? progressH : 0)
+    readonly property bool progressVisible: progress > 0 && poster.visible
 
     // Fixed, not derived from the corner art, so caption lines land in the same
     // place on every cell in a row whatever is beside them.
@@ -206,7 +223,7 @@ Item {
             anchors.bottom: parent.bottom
             // Held off the corner so the still reads as continuing behind it.
             anchors.leftMargin: posterCell.inset
-            anchors.bottomMargin: posterCell.inset
+            anchors.bottomMargin: posterCell.bottomInset
             width: posterCell.badgeW
             height: posterCell.badgeAspect > 0 ? width / posterCell.badgeAspect : width
             color: "transparent"
@@ -251,6 +268,7 @@ Item {
             anchors.rightMargin: posterCell.cornerTagInset
             anchors.bottom: parent.bottom
             anchors.bottomMargin: posterCell.cornerTagInset
+                                  + (posterCell.progressVisible ? posterCell.progressH : 0)
             height: posterCell.cornerTagLineH
         }
 
@@ -268,7 +286,7 @@ Item {
             anchors.rightMargin: (cornerText.visible || cornerTagText.visible)
                                  ? posterCell.inset * 2 : posterCell.inset
             anchors.bottom: parent.bottom
-            anchors.bottomMargin: posterCell.inset
+            anchors.bottomMargin: posterCell.bottomInset
             height: posterCell.captionLineH
             text: posterCell.captionBottom
         }
@@ -281,8 +299,33 @@ Item {
             anchors.right: parent.right
             anchors.rightMargin: posterCell.inset
             anchors.bottom: parent.bottom
-            anchors.bottomMargin: posterCell.inset
+            anchors.bottomMargin: posterCell.bottomInset
             height: posterCell.captionLineH
+        }
+
+        // Along the very foot of the artwork, edge to edge and over everything
+        // else — where a thumbnail's watched bar belongs, and the one overlay
+        // whose whole meaning is the width it runs to. Only over real artwork:
+        // the placeholder is a titled card, not a picture of the video.
+        Item {
+            visible: posterCell.progressVisible
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: posterCell.progressH
+
+            Rectangle {
+                anchors.fill: parent
+                color: posterCell.progressInk
+                opacity: 0.35
+            }
+            Rectangle {
+                anchors.left: parent.left
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: parent.width * Math.max(0, Math.min(1, posterCell.progress))
+                color: posterCell.progressInk
+            }
         }
     }
 }

@@ -149,6 +149,16 @@ FocusScope {
         return id ? youtubeBackend.channel_art_url(id, Math.round(Math.max(w, h))) : ""
     }
 
+    // How much of a video has been watched, for the rule along the foot of its
+    // thumbnail. A playlist or a channel is not a thing that is part-watched,
+    // and the card at the front of the row is not a video at all.
+    function videoProgressFor(item) {
+        var rev = metaRev // dependency: re-runs when a duration probe lands
+        if (!item || tileOf(item) || rev < 0 || !youtubeBackend)
+            return 0
+        return youtubeBackend.video_progress(item.videoId || "")
+    }
+
     // Over the art: the video's name on top, its age and runtime sharing the
     // line beneath — age from the left, runtime from the corner.
     function videoCaptionFor(item) {
@@ -635,6 +645,10 @@ FocusScope {
             badgeSource: itemsRoot.videoBadgeFor
             captionSource: entry.shelfKind === "playlists" ? itemsRoot.playlistCaptionFor
                                                            : itemsRoot.videoCaptionFor
+            // A playlist cell stands for a list rather than a video, so its
+            // shelf is the one row of thumbnails with nothing to mark.
+            progressSource: entry.shelfKind === "playlists" ? null
+                                                            : itemsRoot.videoProgressFor
             badgeAspect: 1 // a channel avatar is a square
 
             onMoved: {

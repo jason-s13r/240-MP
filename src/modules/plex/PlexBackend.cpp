@@ -167,14 +167,28 @@ QNetworkReply *PlexBackend::plexGet(const QUrl &url, const QString &token) {
     return reply;
 }
 
+// Plex's own POSTs and PUTs carry everything in the query string; the body is
+// empty. Qt warns on a POST with no content type and then assumes form encoding,
+// so the assumption is written down instead — the same header it would have
+// picked, stated rather than guessed, and the warning goes with it.
+static void setEmptyBodyHeaders(QNetworkRequest &req) {
+    req.setHeader(QNetworkRequest::ContentTypeHeader,
+                  QStringLiteral("application/x-www-form-urlencoded"));
+    req.setHeader(QNetworkRequest::ContentLengthHeader, 0);
+}
+
 QNetworkReply *PlexBackend::plexPost(const QUrl &url, const QString &token) {
-    auto *reply = m_nam->post(plexRequest(url, token), QByteArray{});
+    QNetworkRequest req = plexRequest(url, token);
+    setEmptyBodyHeaders(req);
+    auto *reply = m_nam->post(req, QByteArray{});
     ignoreSslErrors(reply);
     return reply;
 }
 
 QNetworkReply *PlexBackend::plexPut(const QUrl &url, const QString &token) {
-    auto *reply = m_nam->put(plexRequest(url, token), QByteArray{});
+    QNetworkRequest req = plexRequest(url, token);
+    setEmptyBodyHeaders(req);
+    auto *reply = m_nam->put(req, QByteArray{});
     ignoreSslErrors(reply);
     return reply;
 }
@@ -2756,7 +2770,8 @@ void PlexBackend::tune_channel(const QString &channelId, const QString &sessionI
         QString livePath = meta["key"].toString();
         if (livePath.isEmpty()) {
             QString msg = mc["message"].toString();
-            qDebug() << "[Plex] Tune produced no stream — raw:" << body.left(600);
+            qDebug() << "[Plex] Tune produced no stream on channel" << channelId
+                     << "— raw:" << body.left(600);
             emit errorOccurred("TUNE FAILED: " + (msg.isEmpty() ? QString("no playable stream") : msg));
             return;
         }
@@ -2864,21 +2879,40 @@ QVariantMap PlexBackend::airingProgramme(const QJsonObject &meta) {
 }
 
 bool PlexBackend::airingIsOnChannel(const QJsonObject &meta, const QVariantMap &channel) {
-    QStringList wanted;
-    for (const char *key : {"channelId", "number", "callSign"}) {
-        const QString v = channel.value(QLatin1String(key)).toString().trimmed();
-        if (!v.isEmpty()) wanted << v;
-    }
-    if (wanted.isEmpty()) return false;
+    // Field against its own field, never across the set. The two sides carry two
+    // different numberings and only one of them is the channel's: an airing's
+    // "channelID" is the DVR's own index (1, 2, 3… in lineup order), while a
+    // channel is known by its vcn (3, 5, 20…). Compared across, a channel
+    // collects the airings of whichever channel sits at that index — 20
+    // Parliament TV showing what is on the DVR's twentieth station. So channelID
+    // is not read at all: what the two sides genuinely share is the identifier,
+    // the vcn and the call sign, and each is matched only to its counterpart.
+    static const struct { const char *ours; const char *theirs; } kPairs[] = {
+        {"channelId", "channelIdentifier"},
+        {"number",    "channelVcn"},
+        // An EPG may write the vcn as the identifier, and may zero-pad it
+        // ("005") — see sameChannelKey on why that still matches.
+        {"number",    "channelIdentifier"},
+        {"callSign",  "channelCallSign"},
+    };
+
+    // Two names for the same channel, one from each side. Numbers compare as
+    // numbers so a padded "005" still answers to vcn 5; anything else compares
+    // as text, case aside.
+    const auto sameChannelKey = [](const QString &a, const QString &b) {
+        bool aNum = false, bNum = false;
+        const qlonglong an = a.toLongLong(&aNum), bn = b.toLongLong(&bNum);
+        if (aNum && bNum) return an == bn;
+        return a.compare(b, Qt::CaseInsensitive) == 0;
+    };
 
     for (const auto &mv : meta["Media"].toArray()) {
         const QJsonObject m = mv.toObject();
-        for (const char *key : {"channelIdentifier", "channelVcn",
-                                "channelCallSign", "channelID"}) {
-            const QString have = m[QLatin1String(key)].toVariant().toString().trimmed();
-            if (have.isEmpty()) continue;
-            for (const QString &w : std::as_const(wanted))
-                if (have.compare(w, Qt::CaseInsensitive) == 0) return true;
+        for (const auto &pair : kPairs) {
+            const QString ours  = channel.value(QLatin1String(pair.ours)).toString().trimmed();
+            const QString theirs = m[QLatin1String(pair.theirs)].toVariant().toString().trimmed();
+            if (ours.isEmpty() || theirs.isEmpty()) continue;
+            if (sameChannelKey(ours, theirs)) return true;
         }
     }
     return false;
