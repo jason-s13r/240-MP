@@ -250,6 +250,38 @@ FocusScope {
                         height: implicitWidth > 0 ? width * implicitHeight / implicitWidth : 0
                         anchors.top: parent.top
                     }
+
+                    // How much of it has been watched, along its foot — the same
+                    // rule the lists draw under the same picture, and the thing
+                    // the RESUME below is offering to act on. Measured from the
+                    // saved position this screen already read rather than asked
+                    // for again; the runtime is what has to come from the cache.
+                    Item {
+                        readonly property real fraction: {
+                            var rev = videoRoot.metaRev // re-runs when a probe lands
+                            if (videoRoot.savedPositionMs <= 0 || rev < 0 || !youtubeBackend)
+                                return 0
+                            return youtubeBackend.video_progress(videoRoot.videoId)
+                        }
+                        visible: fraction > 0
+                        width: thumbImage.width
+                        height: root.sh * 0.0041667 //2
+                        anchors.left: thumbImage.left
+                        anchors.bottom: thumbImage.bottom
+
+                        Rectangle {
+                            anchors.fill: parent
+                            color: root.watchedInk
+                            opacity: 0.35
+                        }
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            width: parent.width * Math.min(1, parent.fraction)
+                            color: root.watchedInk
+                        }
+                    }
                 }
 
                 // PLAY / RESUME

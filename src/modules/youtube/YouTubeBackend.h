@@ -83,6 +83,12 @@ public:
     Q_INVOKABLE QString video_duration_text(const QString &videoId) const;
     Q_INVOKABLE QString video_age_text(const QString &videoId) const;
 
+    // How far through a video its saved position sits, 0..1 — the bar drawn
+    // along the foot of a thumbnail. 0 means nothing to draw: never played,
+    // played to the end (savePosition() resets those to 0), or a runtime that
+    // has not landed yet, which is announced by videoMetaLoaded like the rest.
+    Q_INVOKABLE qreal video_progress(const QString &videoId) const;
+
     // A video's own page, for the info screen a list opens before playback.
     //
     // Two sources, arriving at very different speeds: channel RSS carries the
@@ -209,7 +215,7 @@ private:
     };
 
     QString      historyFilePath() const;
-    QVariantMap  loadHistory() const;
+    QVariantMap  readHistoryFile() const;
     void         saveHistory(const QVariantMap &history);
     QString      watchLaterFilePath() const;
     QVariantList loadWatchLater() const;
@@ -333,6 +339,11 @@ private:
     // Duration and publish date per video ID, written once and kept — the reason
     // a list drawn from cache still has its runtimes. `asked` stops a video
     // yt-dlp gave no duration for (a live stream) re-queueing its channel.
+    // Watch history, held in memory rather than read per call: video_progress()
+    // is asked from inside a binding, once for every thumbnail on the screen.
+    // This process is the file's only writer, so the two cannot diverge.
+    QVariantMap m_history;
+
     QHash<QString, VideoMeta> m_videoMeta;
     bool m_videoMetaDirty = false;
 

@@ -89,6 +89,12 @@ Window {
     property string surfaceColor:   (allThemes[currentTheme] || allThemes["Video 1"]).surface
     property string accentColor:    (allThemes[currentTheme] || allThemes["Video 1"]).accent
 
+    // The one ink no theme owns: how much of a video has been watched, drawn
+    // along the foot of its thumbnail. Red because that is the mark — it is read
+    // at a glance and not read at all in a palette's own greys, and a theme
+    // recolouring it would be recolouring what it means.
+    readonly property string watchedInk: "#FF0000"
+
     // Whether every clock in the app reads 12-hour. Resolved once by AppCore and
     // mirrored here so views bind root.twelveHour, never appCore.
     property bool twelveHour: false

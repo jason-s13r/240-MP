@@ -35,6 +35,7 @@ YouTubeBackend::YouTubeBackend(const QString &appRoot, const QString &dataRoot, 
     // grid drawn before any list has loaded still have its artwork.
     loadVideoMetaCache();
     loadChannelArtCache();
+    m_history = readHistoryFile();
 }
 
 // ---------------------------------------------------------------------------
@@ -466,6 +467,19 @@ QString YouTubeBackend::video_duration_text(const QString &videoId) const {
     return h > 0 ? QStringLiteral("%1:%2:%3").arg(h)
                        .arg(m, 2, 10, QLatin1Char('0')).arg(s, 2, 10, QLatin1Char('0'))
                  : QStringLiteral("%1:%2").arg(m).arg(s, 2, 10, QLatin1Char('0'));
+}
+
+// Where the bar under a thumbnail stops. A position with no runtime behind it
+// is not a fraction of anything, so it draws nothing rather than guessing;
+// durations land behind the lists, and videoMetaLoaded re-runs the binding.
+qreal YouTubeBackend::video_progress(const QString &videoId) const {
+    const int posMs = m_history.value(videoId).toMap().value("pos").toInt();
+    if (posMs <= 0)
+        return 0.0;
+    const int secs = m_videoMeta.value(videoId).duration;
+    if (secs <= 0)
+        return 0.0;
+    return qMin(1.0, posMs / 1000.0 / secs);
 }
 
 // Coarsest unit that fits, the shape YouTube itself states an age in. Worked
@@ -1687,7 +1701,7 @@ QString YouTubeBackend::historyFilePath() const {
     return m_dataRoot + "/youtube_history.json";
 }
 
-QVariantMap YouTubeBackend::loadHistory() const {
+QVariantMap YouTubeBackend::readHistoryFile() const {
     QFile file(historyFilePath());
     if (!file.open(QIODevice::ReadOnly))
         return {};
@@ -1702,7 +1716,7 @@ void YouTubeBackend::saveHistory(const QVariantMap &history) {
 }
 
 QVariantMap YouTubeBackend::getSavedPosition(const QString &videoId) {
-    const QVariant val = loadHistory().value(videoId);
+    const QVariant val = m_history.value(videoId);
     if (!val.isValid())
         return {};
     return val.toMap();
@@ -1710,7 +1724,7 @@ QVariantMap YouTubeBackend::getSavedPosition(const QString &videoId) {
 
 void YouTubeBackend::savePosition(const QString &videoId, int positionMs,
                                   const QString &title, const QString &channelName) {
-    QVariantMap history = loadHistory();
+    QVariantMap history = m_history;
     QVariantMap entry;
     entry["pos"]         = positionMs;
     entry["title"]       = title;
@@ -1727,11 +1741,12 @@ void YouTubeBackend::savePosition(const QString &videoId, int positionMs,
         for (int i = kMaxHistoryItems; i < keys.size(); ++i)
             history.remove(keys[i]);
     }
+    m_history = history;
     saveHistory(history);
 }
 
 QVariantList YouTubeBackend::getHistory() const {
-    const QVariantMap history = loadHistory();
+    const QVariantMap history = m_history;
     QVariantList items;
     for (auto it = history.begin(); it != history.end(); ++it) {
         const QVariantMap entry = it.value().toMap();
@@ -1754,6 +1769,7 @@ QVariantList YouTubeBackend::getHistory() const {
 }
 
 void YouTubeBackend::delete_history() {
+    m_history.clear();
     QFile::remove(historyFilePath());
 }
 

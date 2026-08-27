@@ -25,6 +25,12 @@ FocusScope {
     // Optional caption for wide cells only, same rule. Returns
     // { top, bottom, corner }, or null for an item with nothing to say.
     property var captionSource: null
+    // How much of each item has been watched, 0..1 — the rule along the foot of
+    // its artwork. Ungated by shape, unlike the two above: a bar is the item's
+    // own state rather than a description of the picture, and it returns 0 for
+    // anything with nothing to say, which draws nothing.
+    property var progressSource: null
+
     // A short label for the foot of every cell, whatever its shape — the Plex
     // live lineup's channel number. Ungated, unlike the two above: a number
     // identifies the cell rather than describing artwork a portrait cover is
@@ -92,6 +98,10 @@ FocusScope {
 
     function cornerTagFor(item) {
         return cornerTagSource ? cornerTagSource(item) : ""
+    }
+
+    function progressFor(item) {
+        return progressSource ? progressSource(item) : 0
     }
 
     readonly property var currentItemData:
@@ -185,6 +195,7 @@ FocusScope {
 
             readonly property var caption: shelfRoot.captionFor(modelData)
             cornerTagLabel: shelfRoot.cornerTagFor(modelData)
+            progress: shelfRoot.progressFor(modelData)
 
             captionTop: caption ? (caption.top || "") : ""
             captionBottom: caption ? (caption.bottom || "") : ""
