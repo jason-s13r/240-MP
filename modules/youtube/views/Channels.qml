@@ -333,6 +333,9 @@ FocusScope {
         rows: 3
         // Square: a channel avatar is a circle in a square, not cover art.
         posterAspect: 1
+        // An avatar reads fine well below the height three rows allow, so trade
+        // some of it for one more channel per row.
+        posterScale: 0.82
         posterSource: channelsRoot.posterFor
         browseEnabled: letterIndex.length > 0
 

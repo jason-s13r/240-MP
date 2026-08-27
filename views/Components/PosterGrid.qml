@@ -35,6 +35,10 @@ FocusScope {
     // panel is up without any special-casing.
     property int rows: 3
     property real posterAspect: 2 / 3
+    // Shrinks the poster below the height the rows allow, which lets one more
+    // column fit. For grids whose art is small enough to read at a size the
+    // row height alone would overshoot — channel avatars, not cover art.
+    property real posterScale: 1
 
     // Every cell carries a ring of this thickness; only the selected one is
     // coloured. The gutter is two of them, so rings between neighbours meet
@@ -50,7 +54,7 @@ FocusScope {
     // (leftover strip on the right), or one more, shrinking posters to fill the
     // width exactly (leftover band under the last row). Whichever wastes less
     // wins, so neither axis is visibly padded and the gutter stays put.
-    readonly property real maxPosterH: (grid.height - rows * gutter) / rows
+    readonly property real maxPosterH: ((grid.height - rows * gutter) / rows) * posterScale
     readonly property real maxPosterW: maxPosterH * posterAspect
 
     readonly property int wideCols: Math.max(1, Math.floor(width / (maxPosterW + gutter)))
