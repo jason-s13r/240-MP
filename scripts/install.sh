@@ -8,7 +8,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-REPO="anthonycaccese/240-mp"          # ← update before first release
+REPO="jason-s13r/240-mp"          # ← update before first release
 INSTALL_DIR="/opt/240mp"
 LAUNCHER="/usr/local/bin/240mp"
 SYSTEMD_SERVICE="/etc/systemd/system/240mp.service"

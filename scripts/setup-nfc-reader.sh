@@ -18,7 +18,7 @@
 #   bash scripts/setup-nfc-reader.sh
 #
 # Or standalone, without cloning:
-#   bash <(curl -fsSL https://github.com/anthonycaccese/240-mp/releases/latest/download/setup-nfc-reader.sh)
+#   bash <(curl -fsSL https://github.com/jason-s13r/240-mp/releases/latest/download/setup-nfc-reader.sh)
 #
 # Pass a username to authorize (defaults to the invoking user):
 #   bash scripts/setup-nfc-reader.sh pi

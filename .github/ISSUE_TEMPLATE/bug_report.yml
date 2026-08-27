@@ -12,7 +12,7 @@ body:
     attributes:
       label: Before you file
       options:
-        - label: I checked the [Wiki](https://github.com/anthonycaccese/240-MP/wiki) and existing [issues](https://github.com/anthonycaccese/240-MP/issues) and didn't find this.
+        - label: I checked the [Wiki](https://github.com/jason-s13r/240-MP/wiki) and existing [issues](https://github.com/jason-s13r/240-MP/issues) and didn't find this.
           required: true
   - type: dropdown
     id: module
