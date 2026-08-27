@@ -70,6 +70,7 @@ add_executable(240mp
     src/util/FontconfigOverride.cpp
     src/input/InputManager.cpp
     src/input/IdleTracker.cpp
+    src/net/AppNamFactory.cpp
     src/update/UpdateManager.cpp
     $<$<BOOL:${APPLE}>:src/util/MacosUtils.mm>
 )

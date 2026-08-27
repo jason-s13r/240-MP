@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Window
+import Components
 
 Window {
     id: root
@@ -88,14 +89,63 @@ Window {
     property string surfaceColor:   (allThemes[currentTheme] || allThemes["Video 1"]).surface
     property string accentColor:    (allThemes[currentTheme] || allThemes["Video 1"]).accent
 
+    // Whether every clock in the app reads 12-hour. Resolved once by AppCore and
+    // mirrored here so views bind root.twelveHour, never appCore.
+    property bool twelveHour: false
+
+    // The top row's right-hand corner. The clock sits on the right margin, on
+    // the vertical centre the playback OSD draws its own clock at
+    // (scripts/mpv-osc.lua), so the reading does not move when mpv takes the
+    // screen; a module may hang a status line of its own to the left of it.
+    readonly property real cornerGap: root.sw * 0.025 //16
+    readonly property real cornerMargin: root.sw * 0.12 //76.8
+    readonly property real cornerCenterY: root.sh * 0.1260417 //60.5
+
+    // Width a module claims there. Written by the module that draws one and back
+    // to 0 when it goes away, so the header shrinks for it rather than running
+    // into it.
+    property real statusReserve: 0
+
+    // Where that line hangs: clear of the clock. A module anchors to parent.right
+    // with this margin.
+    readonly property real statusMargin: root.cornerMargin + appClock.width + root.cornerGap
+
+    // How much of the top row the corner takes, all told. A header sizes itself
+    // to what is left rather than running into it, and it moves with the reading
+    // — "11:59 PM" is wider than "23:59" — and with whatever is beside it.
+    readonly property real cornerReserve: appClock.width
+                                        + (root.statusReserve > 0
+                                           ? root.statusReserve + root.cornerGap : 0)
+                                        + root.cornerGap
+
+    // Poster art feature switch, read by the media modules' browse and detail
+    // views. Mirrors color_scheme: seeded in Component.onCompleted, kept live by
+    // onAppSettingChanged. Views must bind root.posterGrid, never appCore.
+    property bool posterGrid: false
+
+    // Live TV guide switch, read by the live channel list. Mirrored here for the
+    // same reason posterGrid is: views bind root.liveEpg, never appCore.
+    property bool liveEpg: false
+
     readonly property real sw: width
     readonly property real sh: height
 
     Connections {
         target: appCore
+        // Enabling a module, or changing its hours format, can change the answer
+        // for the whole app — asked again rather than reasoned about here.
+        function onModuleSettingChanged(moduleId, key, value) {
+            if (key === "hours_format" || key === "enabled")
+                root.twelveHour = appCore.twelve_hour_clock()
+        }
+
         function onAppSettingChanged(key, value) {
             if (key === "color_scheme") {
                 root.currentTheme = value
+            } else if (key === "poster_grid") {
+                root.posterGrid = (value === "On")
+            } else if (key === "live_epg") {
+                root.liveEpg = (value === "On")
             } else if (key === "screensaver_timeout") {
                 var sec = parseInt(value)
                 if (sec > 0) {
@@ -107,6 +157,19 @@ Window {
                 }
             }
         }
+    }
+
+    // The startup module, entered once the settings above have been applied.
+    function navigateToStartupModule() {
+        var entryPoint = appCore.startupModuleEntryPoint()
+        if (!entryPoint)
+            return
+        root.appNavStack.push({
+            source: moduleLoader.source,
+            params: root.appCurrentParams,
+            listState: {}
+        })
+        moduleLoader.setSource(entryPoint, { "navParams": { fromAppStartup: true } })
     }
 
     Component.onCompleted: {
@@ -129,6 +192,10 @@ Window {
             t["Custom"] = custom
             root.allThemes = t
         }
+
+        root.posterGrid = ((cfg.app && cfg.app.poster_grid) || "Off") === "On"
+        root.liveEpg    = ((cfg.app && cfg.app.live_epg) || "Off") === "On"
+        root.twelveHour = appCore.twelve_hour_clock()
 
         var savedTheme = (cfg.app && cfg.app.color_scheme) || "Video 1"
         if (savedTheme === "Custom" && !root.allThemes["Custom"]) {
@@ -181,6 +248,11 @@ Window {
     // engine invalidates the root context itself.
     readonly property var hints: inputManager ? inputManager.hints : ({})
     readonly property string appVersion: appCore ? appCore.appVersion : ""
+    // True while something else owns the whole display: mpv playing, a weather
+    // forecast, a takeover script. The two flags the screen saver already reads,
+    // behind the same null guard as the mirrors above.
+    readonly property bool displayOwned:
+        idleTracker ? (idleTracker.mpvActive || idleTracker.scriptActive) : false
 
     // --- SCREEN SAVER STATE ---
     property bool screenSaverActive: false
@@ -251,15 +323,13 @@ Window {
             item.forceActiveFocus()
             if (!root._startupNavigated) {
                 root._startupNavigated = true
-                var entryPoint = appCore.startupModuleEntryPoint()
-                if (entryPoint) {
-                    root.appNavStack.push({
-                        source: moduleLoader.source,
-                        params: root.appCurrentParams,
-                        listState: {}
-                    })
-                    moduleLoader.setSource(entryPoint, { "navParams": { fromAppStartup: true } })
-                }
+                // Deferred a tick: this fires while the window is still being
+                // built, and the app settings — poster_grid, the theme, the
+                // 12/24-hour clock — are seeded in the root's own
+                // Component.onCompleted, which QML runs only after every child
+                // has completed. A module booted straight into would otherwise
+                // read every one of them at its default.
+                Qt.callLater(root.navigateToStartupModule)
             }
         }
 
@@ -281,6 +351,21 @@ Window {
             }
 
         }
+    }
+
+    // --- CLOCK ---
+    // Declared after the module loader so it sits over whatever view is up, and
+    // before the screen saver so the saver's black frame still covers it.
+    // Hidden while something else owns the display — a weather forecast or a
+    // takeover script draws its own full screen, clock included.
+    Clock {
+        id: appClock
+        visible: !root.displayOwned
+        // Placed where the OSD's own clock sits, so the time stays put when a
+        // video's OSD comes up over it.
+        anchors.right: parent.right
+        anchors.rightMargin: root.cornerMargin
+        y: root.cornerCenterY - height / 2
     }
 
     // --- SCREEN SAVER (Idle Tracker integration) ---

@@ -100,6 +100,33 @@ FocusScope {
             })
         }
 
+        // Poster Grid — browse movies and shows as cover art instead of text
+        // rows, and show that art on the detail views. Off by default.
+        items.push({
+            type: "list_single",
+            key: "poster_grid",
+            label: "Poster Grid",
+            options: ["Off", "On"],
+            value: appSettings["poster_grid"] || "Off",
+            description: "[ON] Browse movies and shows as a grid of cover art\n[OFF] Browse as a text list",
+            moduleId: ""
+        })
+
+        // TV Guide — what each live channel is showing, read from the DVR's own
+        // EPG and drawn beside the channel in the live lineup. Off by default:
+        // it is a guide request per screenful of channels that a bare list of
+        // names never made, and a lineup whose provider carries no listings has
+        // nothing to gain from it.
+        items.push({
+            type: "list_single",
+            key: "live_epg",
+            label: "TV Guide",
+            options: ["Off", "On"],
+            value: appSettings["live_epg"] || "Off",
+            description: "[ON] Show what is on now on each live TV channel\n[OFF] List live TV channels by name",
+            moduleId: ""
+        })
+
         // Auto Crop — default crop (panscan) state for every video. Off by default;
         // crop can still be toggled live during playback via the mpv OSC.
         items.push({
@@ -231,7 +258,8 @@ FocusScope {
         anchors.top: parent.top
         anchors.right: parent.right
         anchors.topMargin: root.sh * 0.125 //60
-        anchors.rightMargin: root.sw * 0.125 //80
+        // Stops short of the corner clock, which owns the right end of this row.
+        anchors.rightMargin: root.sw * 0.125 + root.cornerReserve //80 + corner
         font.pixelSize: root.sh * 0.0291667 //14
         color: root.tertiaryColor
         font.family: root.globalFont

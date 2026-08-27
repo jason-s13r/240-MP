@@ -20,6 +20,31 @@ FocusScope {
     property var extras: []
     readonly property bool hasExtras: extras.length > 0
 
+    // Poster art. The image loads whenever the feature is on; showPoster only
+    // flips once it is actually decoded, so a show with no art keeps the
+    // original full-width layout rather than leaving a hole.
+    readonly property string posterUrl: root.posterGrid
+        ? plexBackend.poster_url(item, root.sw * 0.1875, root.sh * 0.25, "detail") : ""
+    readonly property bool showPoster: posterImage.status === Image.Ready
+
+    // With a poster in the left column the season list no longer fits beneath
+    // the details row, so it moves alongside — right of the poster, under the
+    // summary. Both branches of each are today's values.
+    readonly property real sectionX: showPoster ? root.sw * 0.209375 : 0 //144 : 0
+    readonly property real sectionW: showPoster ? root.sw * 0.54375   //348
+                                                : root.sw * 0.76875   //492
+
+    // Season art beside each row title. The taller rows spend the same extra
+    // box height the poster unlocked, so the two appear together and the list
+    // can never outgrow the content box. Slot width is reserved for every row
+    // so titles line up whether or not a season has art.
+    readonly property bool rowArt: showPoster
+    readonly property real rowArtW: root.sw * 0.0375     //24 — a 2:3 season poster at rowArtH
+    readonly property real rowArtH: root.sh * 0.0666667  //32
+    function rowArtFor(m) {
+        return (rowArt && m) ? plexBackend.poster_url(m, rowArtW, rowArtH, "detail") : ""
+    }
+
     // Focus rows: 0 = play button, 1 = extras (when hasExtras),
     // 4 = write NFC card (when a reader is present), 2 = season list.
     // The NFC row is 4 rather than 3 so the existing saved-focus restores, which
@@ -60,7 +85,7 @@ FocusScope {
             if (!showRoot.waitingForOnDeck) return
             showRoot.waitingForOnDeck = false
             if (episodeItem && episodeItem.ratingKey) {
-                // Found an in-progress episode — RSUM it directly
+                // Found an in-progress episode — RESUME it directly
                 showRoot.navigateTo("Item.qml", { item: episodeItem, libraryName: showRoot.libraryName }, {})
             } else {
                 // No in-progress episode — fall back to first-unwatched logic
@@ -116,6 +141,9 @@ FocusScope {
     focus: true
 
     Keys.onUpPressed: {
+        // Row 0 is the top of this screen; above it is the SERVER | PROFILE line
+        // in the corner, when there is one. Otherwise the rows wrap as before.
+        if (focusRow === 0 && moduleRoot.focusStatus()) return
         if (focusRow === 2) {
             if (seasonList.currentIndex > 0) {
                 seasonList.currentIndex--
@@ -229,21 +257,56 @@ FocusScope {
         visible: !isLoading
         anchors.top: parent.top
         anchors.left: parent.left
-        anchors.topMargin: root.sh * 0.25 //120
+        // A poster stacked over the buttons needs more column than the text
+        // layout ever did, and there is dead space to take it from: the AppBar
+        // ends at y84 and the hint row does not start until y414.
+        anchors.topMargin: showRoot.showPoster ? root.sh * 0.2166667 //104
+                                         : root.sh * 0.25      //120
         anchors.leftMargin: root.sw * 0.115625 //74
         width: root.sw * 0.76875 //492
-        height: root.sh * 0.525 //252
+        height: showRoot.showPoster ? root.sh * 0.6104167 //293
+                              : root.sh * 0.525     //252
         clip: true
 
         Row {
             id: showDetails
-            height: root.sh * 0.2916667 //140
+            height: showRoot.showPoster ? root.sh * 0.4833333  //232
+                                        : root.sh * 0.2916667 //140
             spacing: root.sw * 0.0375 //24
 
             Column {
                 width: root.sw * 0.1875 //120
 
-                // PLAY / RSUM button
+                // Poster, above the action buttons. The wrapper carries the 8px
+                // gap and collapses to nothing when hidden — a Column skips
+                // invisible children, so the button stack is unmoved with the
+                // feature off.
+                Item {
+                    visible: showRoot.showPoster
+                    width: parent.width
+                    height: posterImage.height + root.sh * 0.0166667 //8 gap
+
+                    Image {
+                        id: posterImage
+                        source: showRoot.posterUrl
+                        asynchronous: true
+                        cache: true
+                        // Fitted, not cropped, and sized from what came back —
+                        // a 2:3 poster stands tall, a 16:9 episode still is wide.
+                        // Clamped to the button column either way, so a wide
+                        // still can never spill into the summary beside it.
+                        fillMode: Image.PreserveAspectFit
+                        sourceSize.width: root.sw * 0.1875 //120
+                        sourceSize.height: root.sh * 0.25  //120
+                        width: Math.min(implicitWidth, parent.width)
+                        height: implicitWidth > 0
+                                ? width * implicitHeight / implicitWidth : 0
+                        anchors.top: parent.top
+                        anchors.horizontalCenter: parent.horizontalCenter
+                    }
+                }
+
+                // PLAY / RESUME button
                 Rectangle {
                     id: playButton
                     color: focusRow === 0 ? root.accentColor : root.surfaceColor
@@ -254,7 +317,7 @@ FocusScope {
 
                     Text {
                         anchors.centerIn: parent
-                        text: (item.viewOffset && item.viewOffset > 0) ? "RSUM \u25BA" : "PLAY \u25BA"
+                        text: (item.viewOffset && item.viewOffset > 0) ? "RESUME \u25BA" : "PLAY \u25BA"
                         color: focusRow === 0 ? root.surfaceColor : root.primaryColor
                         font.family: root.globalFont
                         font.pixelSize: root.sh * 0.05 //24
@@ -302,6 +365,7 @@ FocusScope {
             }
 
             Column {
+                id: textColumn
                 topPadding: root.sh * 0.0083333 //4
                 width: root.sw * 0.54375 //348
                 spacing: root.sh * 0.0166667 //8
@@ -373,12 +437,13 @@ FocusScope {
         // Seasons
         Text {
             id: seasonListLabel
-            anchors.top: showDetails.bottom
+            x: showRoot.sectionX
+            y: (showRoot.showPoster ? textColumn.height : showDetails.height)
+               + root.sh * 0.0145833 //7
             text: "Seasons:"
             color: root.secondaryColor
             font.family: root.globalFont
             font.capitalization: Font.AllUppercase
-            anchors.topMargin: root.sh * 0.0145833 //7
             leftPadding: root.sw * 0.009375 //6;
             rightPadding: root.sw * 0.009375 //6;
             font.pixelSize: root.sh * 0.0291667 //14
@@ -389,19 +454,38 @@ FocusScope {
             id: seasonList
             model: seasons
             anchors.top: seasonListLabel.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
+            x: showRoot.sectionX
+            width: showRoot.sectionW
             anchors.topMargin: root.sh * 0.0145833 //7
-            height: root.sh * 0.175 //84
+            height: showRoot.rowArt ? root.sh * 0.225  //108 — 3 rows of 36
+                                    : root.sh * 0.175  //84  — 3 rows of 28
             clip: true
 
             delegate: Item {
                 width: seasonList.width
-                height: root.sh * 0.0583333 //28
+                height: showRoot.rowArt ? root.sh * 0.075      //36
+                                        : root.sh * 0.0583333  //28
+
+                Image {
+                    id: rowThumb
+                    visible: status === Image.Ready
+                    source: showRoot.rowArtFor(modelData)
+                    asynchronous: true
+                    cache: true
+                    // Fitted inside the reserved slot, so art of any aspect is
+                    // shown whole and centred rather than cropped to the box.
+                    fillMode: Image.PreserveAspectFit
+                    width: showRoot.rowArtW
+                    height: showRoot.rowArtH
+                    sourceSize.width: showRoot.rowArtW
+                    sourceSize.height: showRoot.rowArtH
+                    anchors.verticalCenter: parent.verticalCenter
+                }
 
                 Item {
                     id: textClip
-                    width: Math.min(rowText.implicitWidth, seasonList.width)
+                    x: showRoot.rowArt ? showRoot.rowArtW : 0
+                    width: Math.min(rowText.implicitWidth, seasonList.width - x)
                     height: parent.height
                     clip: true
 

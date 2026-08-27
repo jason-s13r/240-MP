@@ -21,6 +21,9 @@ FocusScope {
         target: plexBackend
 
         function onCapabilitiesLoaded(caps) {
+            // Libraries.qml checks every section at once, so a late reply for a
+            // different one can land here.
+            if (caps.sectionId && caps.sectionId !== subMenuRoot.sectionId) return
             var items = []
             if (caps.recommended) items.push({ label: "RECOMMENDED", action: "hubs" })
             items.push({ label: "LIBRARY", action: "library_all" })
@@ -88,6 +91,9 @@ FocusScope {
 
         Keys.onUpPressed: {
             if (count === 0) return
+            // Off the top of the list is the SERVER | PROFILE line in the corner,
+            // when this screen has one; otherwise the list wraps as it always has.
+            if (currentIndex === 0 && moduleRoot.focusStatus()) return
             if (currentIndex > 0) currentIndex--
             else currentIndex = count - 1
             menuList.positionViewAtIndex(menuList.currentIndex, ListView.Contain)

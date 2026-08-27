@@ -106,6 +106,12 @@ FocusScope {
                 sessionId:          cardRoot.sessionId,
                 viewOffset:         d.viewOffset || 0,
                 title:              d.title,
+                grandparentTitle:   d.grandparentTitle || "",
+                // See Item.qml: larger than drawn, cropped to the window by the app.
+                posterUrl:          plexBackend.poster_url(d, 300, 450, "grid"),
+                contentRating:      d.contentRating || "",
+                parentIndex:        d.parentIndex || 0,
+                index:              d.index || 0,
                 audioStreams:       d.audioStreams,
                 subtitleStreams:    d.subtitleStreams,
                 isTranscoding:      d.forceTranscode || false,

@@ -9,9 +9,15 @@ Row {
     property string title: "240-MP"
     property string subtitle: ""
 
-    // Fits the standard screen gutter — 80px (root.sw * 0.125) on each side.
-    // The subtitle elides when it would overflow this width.
-    width: root.sw * 0.75 //480
+    // Which end of an over-long subtitle is dropped. A name reads from the left,
+    // so its tail goes; a breadcrumb's tail says where you actually are, so it
+    // keeps that and drops the path in front of it.
+    property int subtitleElide: Text.ElideRight
+
+    // Fits the standard screen gutter — 80px (root.sw * 0.125) on each side —
+    // less whatever the top row's corner claims. The subtitle elides when it
+    // would overflow this width.
+    width: root.sw * 0.75 - root.cornerReserve //480 - corner
 
     spacing: root.sw * 0.025 //16
     Item {
@@ -60,7 +66,7 @@ Row {
         font.pixelSize: root.sh * 0.0333333 //16
         // x is this Text's Row position, i.e. everything before it (icon,
         // title, separator, spacings) — cap to the bar's remaining space.
-        elide: Text.ElideRight
+        elide: appBar.subtitleElide
         width: Math.max(0, Math.min(implicitWidth, appBar.width - x))
     }
 }

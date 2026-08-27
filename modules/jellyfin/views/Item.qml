@@ -116,6 +116,10 @@ FocusScope {
                 seriesId: d.seriesId || "",
                 mediaSourceId: d.mediaSourceId || d.itemId,
                 title: d.title,
+                // Named on mpv's OSD as "Show S01E01: Title" — see Player.qml's
+                // osdTitle. Absent on a movie, which is just its title.
+                grandparentTitle: d.grandparentTitle || "",
+                contentRating: d.contentRating || "",
                 viewOffset: d.viewOffset || 0,
                 audioStreams: d.audioStreams || [],
                 subtitleStreams: d.subtitleStreams || [],
@@ -413,7 +417,7 @@ FocusScope {
             height: root.sh * 0.35 //168
             spacing: root.sw * 0.0375 //24
 
-            // PLAY / RSUM button
+            // PLAY / RESUME button
             Rectangle {
                 id: playButton
                 color: focusRow === 0 ? root.accentColor : root.surfaceColor
@@ -424,7 +428,7 @@ FocusScope {
 
                 Text {
                     anchors.centerIn: parent
-                    text: (detail && detail.viewOffset > 0) ? "RSUM \u25BA" : "PLAY \u25BA"
+                    text: (detail && detail.viewOffset > 0) ? "RESUME \u25BA" : "PLAY \u25BA"
                     color: focusRow === 0 ? root.surfaceColor : root.primaryColor
                     font.family: root.globalFont
                     font.pixelSize: root.sh * 0.05 //24

@@ -169,7 +169,7 @@ FocusScope {
             height: root.sh * 0.2916667 //140
             spacing: root.sw * 0.0375 //24
 
-            // PLAY / RSUM button
+            // PLAY / RESUME button
             Rectangle {
                 id: playButton
                 color: focusRow === 0 ? root.accentColor : root.surfaceColor
@@ -180,7 +180,7 @@ FocusScope {
 
                 Text {
                     anchors.centerIn: parent
-                    text: (item.viewOffset && item.viewOffset > 0) ? "RSUM ►" : "PLAY ►"
+                    text: (item.viewOffset && item.viewOffset > 0) ? "RESUME ►" : "PLAY ►"
                     color: focusRow === 0 ? root.surfaceColor : root.primaryColor
                     font.family: root.globalFont
                     font.pixelSize: root.sh * 0.05 //24

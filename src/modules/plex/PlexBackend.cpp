@@ -815,6 +815,9 @@ QVariantMap PlexBackend::formatItem(const QJsonObject &m) const {
         {"type",                   m["type"].toString("movie")},
         {"durationDisplay",        msToDisplay(m["duration"].toInt())},
         {"grandparentTitle",       m["grandparentTitle"].toString()},
+        // Plex sometimes region-qualifies this ("de/16", "gb/15"); the OSD wants
+        // the certificate, not the country, so the prefix is dropped there.
+        {"contentRating",          m["contentRating"].toString()},
         {"parentTitle",            m["parentTitle"].toString()},
         {"parentRatingKey",        m["parentRatingKey"].toString()},
         // The show's year on a season row, and the show's key on an episode row.
@@ -827,7 +830,90 @@ QVariantMap PlexBackend::formatItem(const QJsonObject &m) const {
         {"leafCount",              m["leafCount"].toInt()},
         {"viewedLeafCount",        m["viewedLeafCount"].toInt()},
         {"originallyAvailableAt",  m["originallyAvailableAt"].toString()},
+        // Which library the item came from — Continue Watching arrives as one
+        // mixed list and is split back into a row per library from these. Set
+        // here because formatItem is the one place every list flows through.
+        {"librarySectionID",       m["librarySectionID"].toVariant().toString()},
+        {"librarySectionTitle",    m["librarySectionTitle"].toString().toUpper()},
+        // Artwork paths, server-relative. Resolved to a URL by poster_url();
+        // which of the three applies depends on the item's type.
+        {"thumb",                  m["thumb"].toString()},
+        {"parentThumb",            m["parentThumb"].toString()},
+        {"grandparentThumb",       m["grandparentThumb"].toString()},
     };
+}
+
+QString PlexBackend::artworkKey(const QVariantMap &item, const QString &context) const {
+    // Which artwork: the most specific the item has (own → season → show), or
+    // the show's, which keeps a whole wall of grid cells reading as one shelf
+    // instead of a mix of portrait art and 16:9 stills.
+    const bool specificArt = (context == QLatin1String("detail")
+                              || context == QLatin1String("shelf"));
+    const QString type = item.value("type").toString();
+
+    QStringList order;
+    if (type == QLatin1String("episode"))
+        // A badge exists to name the show, so it skips the episode's own still
+        // even when there is one — that still is the image it is drawn over.
+        order = (context == QLatin1String("badge"))
+                    ? QStringList{"parentThumb", "grandparentThumb"}
+              : specificArt ? QStringList{"thumb", "parentThumb", "grandparentThumb"}
+                            : QStringList{"grandparentThumb", "thumb"};
+    else if (type == QLatin1String("season"))
+        order = QStringList{"thumb", "parentThumb"};
+    else
+        order = QStringList{"thumb"};
+
+    for (const QString &key : order)
+        if (!item.value(key).toString().isEmpty()) return key;
+    return {};
+}
+
+double PlexBackend::poster_aspect(const QVariantMap &item, const QString &context) const {
+    // An episode's own thumb is a frame from the episode, which Plex stores at
+    // 16:9. Every other artwork any item resolves to — its season's, its show's,
+    // a movie's own — is portrait cover art.
+    const bool still = (item.value("type").toString() == QLatin1String("episode")
+                        && artworkKey(item, context) == QLatin1String("thumb"));
+    return still ? 16.0 / 9.0 : 2.0 / 3.0;
+}
+
+QString PlexBackend::poster_url(const QVariantMap &item, int width, int height,
+                                const QString &context) const {
+    // How it is fitted is the other half of what context decides: cropped to
+    // fill the requested box, or fitted whole inside it. Not the same flag as
+    // the artwork choice — a shelf wants the episode's own still *and* the crop.
+    const bool cropToCell = (context != QLatin1String("detail"));
+
+    const QString thumb = item.value(artworkKey(item, context)).toString();
+    const QString base = serverUrl();
+    if (thumb.isEmpty() || base.isEmpty()) return {};
+
+    // Server-side resize: a 480p-class poster must never pull full-res art down
+    // to a Pi. The token rides as a query param because a QML Image cannot set
+    // the X-Plex-Token header plexRequest() uses everywhere else.
+    QUrl url(base + QStringLiteral("/photo/:/transcode"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("width"),   QString::number(width));
+    q.addQueryItem(QStringLiteral("height"),  QString::number(height));
+    if (cropToCell) {
+        // Cover-crop: minSize treats width/height as a minimum (scaling until
+        // the box is covered, not until it fits) and upscale lets undersized art
+        // reach it. Done on the server, once, at the exact pixel size the cell
+        // draws. A shelf cell is already cut to the art's own shape, so nothing
+        // is lost there — the crop is what makes it arrive at full size.
+        q.addQueryItem(QStringLiteral("minSize"), QStringLiteral("1"));
+        q.addQueryItem(QStringLiteral("upscale"), QStringLiteral("1"));
+    }
+    // Detail and row art stay fitted: there the image describes one item and its
+    // own shape is information — a 16:9 still should read as a still.
+    // Percent-encoded explicitly — QUrlQuery leaves '/' alone in a value, and
+    // the nested path has to arrive at Plex encoded.
+    q.addQueryItem(QStringLiteral("url"),
+                   QString::fromLatin1(QUrl::toPercentEncoding(thumb)));
+    q.addQueryItem(QStringLiteral("X-Plex-Token"), serverToken());
+    url.setQuery(q);
+    return url.toString();
 }
 
 void PlexBackend::flattenSeasons(const QVariantList &rawItems,
@@ -1339,6 +1425,31 @@ void PlexBackend::deleteDeviceThenAuth(const QString &token, std::function<void(
 // Browse
 // ---------------------------------------------------------------------------
 
+// The key the Libraries multiselect writes: one entry per section per server,
+// so the same section number on two servers is two separate choices.
+static QString libraryPrefKey(const QString &machineId, const QString &sectionId) {
+    return machineId.isEmpty() ? sectionId : machineId + "_" + sectionId;
+}
+
+QVariantList PlexBackend::enabledLibraryItems(const QVariantList &items) const {
+    QJsonObject libEnabled = loadConfig()["modules"].toObject()
+                             ["com.240mp.plex"].toObject()["libraries"].toObject();
+    // Nothing chosen yet means everything is on, the same default the library
+    // list itself takes.
+    if (libEnabled.isEmpty()) return items;
+    QString machineId = loadAuth()["active_server_machine_id"].toString();
+    QVariantList out;
+    for (const auto &v : items) {
+        QString sectionId = v.toMap()["librarySectionID"].toString();
+        // An item that does not say where it came from is kept: dropping it
+        // would hide it on the say-so of a field the server need not send.
+        if (sectionId.isEmpty()
+            || libEnabled[libraryPrefKey(machineId, sectionId)].toBool(true))
+            out.append(v);
+    }
+    return out;
+}
+
 void PlexBackend::load_libraries() {
     checkAndRefreshOnStartup([this]() {
         load_libraries_impl();
@@ -1356,18 +1467,21 @@ void PlexBackend::load_libraries_impl() {
                          << midTail(loadAuth()["active_server_machine_id"].toString())
                          << "token=" << tokenShape(token);
 
-    // Check continue watching
-    QUrl cwUrl(uri + "/hubs/continueWatching");
-    QUrlQuery cwq; cwq.addQueryItem("limit","1");
-    cwUrl.setQuery(cwq);
-    auto *cwReply = plexGet(cwUrl, token);
+    // Check continue watching. The whole hub rather than one item: a disabled
+    // library's items are dropped from the row's contents, so the first item
+    // alone cannot say whether the row would have anything left in it.
+    auto *cwReply = plexGet(QUrl(uri + "/hubs/continueWatching"), token);
     connect(cwReply, &QNetworkReply::finished, this, [this, cwReply, uri, token]() {
         cwReply->deleteLater();
         bool hasCw = false;
         if (cwReply->error() == QNetworkReply::NoError) {
             QJsonArray hubs = QJsonDocument::fromJson(cwReply->readAll())
                               .object()["MediaContainer"].toObject()["Hub"].toArray();
-            hasCw = !hubs.isEmpty() && !hubs[0].toObject()["Metadata"].toArray().isEmpty();
+            QVariantList cw;
+            for (const auto &hv : hubs)
+                for (const auto &mv : hv.toObject()["Metadata"].toArray())
+                    cw.append(formatItem(mv.toObject()));
+            hasCw = !enabledLibraryItems(cw).isEmpty();
         }
 
         auto *secReply = plexGet(QUrl(uri + "/library/sections"), token);
@@ -1439,8 +1553,8 @@ void PlexBackend::load_libraries_impl() {
                 QJsonObject s = sv.toObject();
                 if (!kSupportedLibraryTypes.contains(s["type"].toString())) continue;
                 QString key = s["key"].toString();
-                QString libKey = machineId.isEmpty() ? key : machineId + "_" + key;
-                if (!libEnabled.isEmpty() && !libEnabled[libKey].toBool(true)) continue;
+                if (!libEnabled.isEmpty()
+                    && !libEnabled[libraryPrefKey(machineId, key)].toBool(true)) continue;
                 items.append(QVariantMap{
                     {"key",         key},
                     {"title",       s["title"].toString().toUpper()},
@@ -1493,6 +1607,9 @@ void PlexBackend::load_continue_watching() {
         for (const auto &hv : hubs)
             for (const auto &mv : hv.toObject()["Metadata"].toArray())
                 items.append(formatItem(mv.toObject()));
+        // Before flattening, not after: a season in a switched-off library
+        // would otherwise cost a request to expand items nobody will see.
+        items = enabledLibraryItems(items);
         flattenSeasons(items, [this](const QVariantList &flat) { emit continueWatchingLoaded(flat); });
     });
 }
@@ -1515,11 +1632,20 @@ void PlexBackend::load_section_hubs(const QString &sectionId) {
         QVariantList result;
         for (const auto &hv : hubs) {
             QJsonObject h = hv.toObject();
-            if (h["Metadata"].toArray().isEmpty() && h["size"].toInt() == 0) continue;
+            QJsonArray meta = h["Metadata"].toArray();
+            if (meta.isEmpty() && h["size"].toInt() == 0) continue;
+            // This response already carries each hub's first items, so the
+            // sectioned view costs no extra requests; the text list ignores them
+            // and still drills down through hubKey, so both stay in the map.
+            // Seasons are left unflattened — one /children request per season
+            // per hub is not a trade a Pi should make to open a menu.
+            QVariantList items;
+            for (const auto &mv : meta) items.append(formatItem(mv.toObject()));
             result.append(QVariantMap{
                 {"title",   h["title"].toString().toUpper()},
                 {"key",     h["key"].toString()},
                 {"hubKey",  h["hubKey"].toString()},
+                {"items",   items},
             });
         }
         emit hubsLoaded(result);
@@ -1739,7 +1865,10 @@ void PlexBackend::load_category_items(const QString &sectionId, const QString &f
 void PlexBackend::check_section_capabilities(const QString &sectionId) {
     QString uri = serverUrl(), token = serverToken();
 
-    auto *caps = new QVariantMap{{"recommended",false},{"collections",false},{"playlists",false}};
+    // sectionId rides along so a caller checking several libraries at once can
+    // tell the answers apart — the signal is otherwise identical for all of them.
+    auto *caps = new QVariantMap{{"sectionId",sectionId},
+                                 {"recommended",false},{"collections",false},{"playlists",false}};
     auto *remaining = new int(3);
     auto done = [this, caps, remaining]() {
         (*remaining)--;
@@ -1894,9 +2023,15 @@ QVariantMap PlexBackend::buildItemDetail(const QJsonObject &meta) const {
         {"parentIndex",      meta["parentIndex"].toInt()},
         {"parentRatingKey",  meta["parentRatingKey"].toString()},
         {"grandparentTitle", meta["grandparentTitle"].toString()},
+        {"contentRating",    meta["contentRating"].toString()},
         {"parentTitle",      meta["parentTitle"].toString()},
         {"parentYear",       meta["parentYear"].toVariant()},
         {"grandparentRatingKey", meta["grandparentRatingKey"].toString()},
+        // Mirrors formatItem so poster_url() works on a detail regardless of how
+        // the item was reached — including paths with no preceding list row.
+        {"thumb",            meta["thumb"].toString()},
+        {"parentThumb",      meta["parentThumb"].toString()},
+        {"grandparentThumb", meta["grandparentThumb"].toString()},
     };
 }
 
@@ -2522,6 +2657,7 @@ void PlexBackend::load_live_channels() {
                 emit liveChannelsLoaded(QVariantList{});
                 return;
             }
+            m_liveProviderId = providerId;
 
             auto *chReply = plexGet(QUrl(uri + "/" + providerId + "/lineups/dvr/channels"), token);
             connect(chReply, &QNetworkReply::finished, this, [this, chReply]() {
@@ -2543,6 +2679,12 @@ void PlexBackend::load_live_channels() {
                         {"channelId", id},
                         {"number",    number},
                         {"title",     name.toUpper()},
+                        // Never shown: it is one of the names the guide may file
+                        // this channel's airings under (see airingIsOnChannel).
+                        {"callSign",  c["callSign"].toString()},
+                        // The station's logo, where the EPG carries one.
+                        // Resolved to a URL by live_channel_logo_url().
+                        {"thumb",     c["thumb"].toString()},
                     });
                 }
                 if (channels.isEmpty())
@@ -2551,6 +2693,31 @@ void PlexBackend::load_live_channels() {
             });
         });
     });
+}
+
+QString PlexBackend::live_channel_logo_url(const QVariantMap &channel) const {
+    const QString thumb = channel.value("thumb").toString();
+    if (thumb.isEmpty()) return {};
+
+    // The EPG provider serves most station logos from its own host, already
+    // absolute and needing no token of ours.
+    if (thumb.startsWith(QLatin1String("http://"))
+        || thumb.startsWith(QLatin1String("https://")))
+        return thumb;
+
+    const QString base = serverUrl();
+    if (base.isEmpty()) return {};
+
+    // Server-relative, and fetched raw rather than through /photo/:/transcode
+    // the way cover art is: a station logo is a transparent PNG of a few KB,
+    // and the transcoder would flatten that transparency onto black — wrong
+    // under the light themes. Nothing large is held either way, since the cell
+    // bounds the decode with sourceSize.
+    QUrl url(base + (thumb.startsWith(QLatin1Char('/')) ? thumb : QStringLiteral("/") + thumb));
+    QUrlQuery q(url.query());
+    q.addQueryItem(QStringLiteral("X-Plex-Token"), serverToken());
+    url.setQuery(q);
+    return url.toString();
 }
 
 void PlexBackend::tune_channel(const QString &channelId, const QString &sessionId) {
@@ -2598,6 +2765,21 @@ void PlexBackend::tune_channel(const QString &channelId, const QString &sessionI
         m_liveDurationMs  = meta["duration"].toInt();
         m_liveSessionId   = sessionId;
         m_liveStartedMs   = QDateTime::currentMSecsSinceEpoch();
+
+        // The grab's Metadata names the airing, and that name costs no second
+        // request — so it is taken, and it is right. Its window is not: the
+        // beginsAt/endsAt on a grab's Media entry describe the block the tuner
+        // is grabbing, not the listing. A programme running 21:30 to 22:30 came
+        // back ending at 22:00, and the OSD said so. The end time is dropped
+        // here and the guide asked for the real one, which is what "according
+        // to the guide" has to mean. Emitted even when it parses to nothing, so
+        // the player knows to name the channel instead.
+        QVariantMap grabbed = airingProgramme(meta);
+        if (!grabbed.isEmpty()) {
+            grabbed["beginsAt"] = 0;
+            grabbed["endsAt"]   = 0;
+        }
+        emit liveProgrammeLoaded(grabbed);
 
         // Start the HLS transcode against the tuned path. Reuses the universal
         // transcoder + master-m3u8 parse from request_transcode.
@@ -2648,6 +2830,260 @@ void PlexBackend::tune_channel(const QString &channelId, const QString &sessionI
             qDebug() << "[Plex] Live stream URL for mpv:" << streamUrl;
             emit streamUrlReady(streamUrl, token);
         });
+    });
+}
+
+QVariantMap PlexBackend::airingProgramme(const QJsonObject &meta) {
+    const QString title = meta["title"].toString().trimmed();
+    if (title.isEmpty()) return {};
+
+    // An episode names its show; a film or a one-off names only itself, and a
+    // guide that repeats the title as the show name is saying it twice.
+    QString show = meta["grandparentTitle"].toString().trimmed();
+    if (show.compare(title, Qt::CaseInsensitive) == 0) show.clear();
+
+    // beginsAt/endsAt live on the airing's Media entry, and real servers send
+    // them as epoch seconds in either a number or a string (the bundled openapi
+    // has one example of each) — toVariant() reads both. The pair is the window
+    // the programme runs across: its length, how far through it the viewer is,
+    // and when to ask the guide what replaced it. Half a window is none, save
+    // that an end time alone still says when to look again.
+    const QJsonArray media = meta["Media"].toArray();
+    const QJsonObject m = media.isEmpty() ? QJsonObject{} : media[0].toObject();
+    qint64 beginsAt = m["beginsAt"].toVariant().toLongLong();
+    const qint64 endsAt = m["endsAt"].toVariant().toLongLong();
+    if (endsAt <= beginsAt) beginsAt = 0;
+
+    return QVariantMap{
+        {"title",         title},
+        {"showTitle",     show},
+        {"contentRating", meta["contentRating"].toString()},
+        {"beginsAt",      beginsAt},
+        {"endsAt",        endsAt},
+    };
+}
+
+bool PlexBackend::airingIsOnChannel(const QJsonObject &meta, const QVariantMap &channel) {
+    QStringList wanted;
+    for (const char *key : {"channelId", "number", "callSign"}) {
+        const QString v = channel.value(QLatin1String(key)).toString().trimmed();
+        if (!v.isEmpty()) wanted << v;
+    }
+    if (wanted.isEmpty()) return false;
+
+    for (const auto &mv : meta["Media"].toArray()) {
+        const QJsonObject m = mv.toObject();
+        for (const char *key : {"channelIdentifier", "channelVcn",
+                                "channelCallSign", "channelID"}) {
+            const QString have = m[QLatin1String(key)].toVariant().toString().trimmed();
+            if (have.isEmpty()) continue;
+            for (const QString &w : std::as_const(wanted))
+                if (have.compare(w, Qt::CaseInsensitive) == 0) return true;
+        }
+    }
+    return false;
+}
+
+void PlexBackend::resolveLiveProvider(std::function<void(const QString &)> then) {
+    if (!m_liveProviderId.isEmpty()) { then(m_liveProviderId); return; }
+
+    // Nothing has looked the EPG provider up yet this session — a card or a
+    // deep link can reach the player without passing through the channel list.
+    const QString uri = serverUrl(), token = serverToken();
+    if (uri.isEmpty()) { then(QString{}); return; }
+    auto *provReply = plexGet(QUrl(uri + "/media/providers"), token);
+    connect(provReply, &QNetworkReply::finished, this,
+            [this, provReply, then = std::move(then)]() {
+        provReply->deleteLater();
+        if (provReply->error() != QNetworkReply::NoError) {
+            qDebug() << "[Plex] Guide provider lookup failed:" << provReply->errorString();
+            then(QString{});
+            return;
+        }
+        const QJsonArray providers = QJsonDocument::fromJson(provReply->readAll())
+                                     .object()["MediaContainer"].toObject()["MediaProvider"].toArray();
+        for (const auto &pv : providers) {
+            const QJsonObject p = pv.toObject();
+            if (p["protocols"].toString().contains("livetv")) {
+                m_liveProviderId = p["identifier"].toString();
+                break;
+            }
+        }
+        then(m_liveProviderId);
+    });
+}
+
+void PlexBackend::load_live_programme(const QVariantMap &channel) {
+    if (channel.isEmpty()) { emit liveProgrammeLoaded(QVariantMap{}); return; }
+    resolveLiveProvider([this, channel](const QString &providerId) {
+        if (providerId.isEmpty()) { emit liveProgrammeLoaded(QVariantMap{}); return; }
+        fetchLiveProgramme(providerId, channel);
+    });
+}
+
+void PlexBackend::load_live_guide(const QVariantList &channels) {
+    if (channels.isEmpty()) { emit liveGuideLoaded(QVariantMap{}); return; }
+    resolveLiveProvider([this, channels](const QString &providerId) {
+        if (providerId.isEmpty()) { emit liveGuideLoaded(QVariantMap{}); return; }
+        fetchLiveGuide(providerId, channels);
+    });
+}
+
+void PlexBackend::fetchLiveProgramme(const QString &providerId, const QVariantMap &channel) {
+    const QString uri = serverUrl(), token = serverToken();
+    if (uri.isEmpty()) { emit liveProgrammeLoaded(QVariantMap{}); return; }
+
+    // The guide grid through the same provider proxy the lineup came from,
+    // narrowed server-side to the airings on right now: everything that comes
+    // back has begun and has not ended, so finding this channel's row in it is
+    // all that is left. The comparisons are Plex's own query syntax and belong
+    // to the key, not the value — QUrlQuery has no way to say that, hence a
+    // query string written out in full.
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    QUrl url(uri + "/" + providerId + "/grid");
+    // No type filter: an airing is a film on one channel and an episode on the
+    // next, and a guide narrowed to one of them would silently lose the other.
+    url.setQuery(QStringLiteral("sort=beginsAt&endsAt>=%1&beginsAt<=%1"
+                                "&X-Plex-Container-Start=0&X-Plex-Container-Size=400")
+                 .arg(now));
+
+    auto *reply = plexGet(url, token);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, providerId, channel]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 498) {
+                handle498([this, providerId, channel]{ fetchLiveProgramme(providerId, channel); });
+                return;
+            }
+            // Not an errorOccurred: a guide the server will not serve costs the
+            // OSD a programme name, and nothing else. The channel still plays.
+            qDebug() << "[Plex] Live guide fetch failed:" << reply->errorString();
+            emit liveProgrammeLoaded(QVariantMap{});
+            return;
+        }
+        const QByteArray body = reply->readAll();
+        const QJsonArray airings = QJsonDocument::fromJson(body)
+                                   .object()["MediaContainer"].toObject()["Metadata"].toArray();
+        for (const auto &av : airings) {
+            const QJsonObject meta = av.toObject();
+            if (!airingIsOnChannel(meta, channel)) continue;
+            const QVariantMap p = airingProgramme(meta);
+            // Logged because this is the only window the OSD trusts, off a route
+            // the server does not document: one line says whether the guide and
+            // the screen agree.
+            qDebug().noquote() << "[Plex] Guide:" << p.value("title").toString()
+                     << "on" << channel.value("title").toString()
+                     << QDateTime::fromSecsSinceEpoch(p.value("beginsAt").toLongLong())
+                        .toString(QStringLiteral("hh:mm")) << "-"
+                     << QDateTime::fromSecsSinceEpoch(p.value("endsAt").toLongLong())
+                        .toString(QStringLiteral("hh:mm"));
+            emit liveProgrammeLoaded(p);
+            return;
+        }
+        qDebug() << "[Plex] Guide lists nothing on air for channel"
+                 << channel.value("channelId").toString()
+                 << "(" << airings.size() << "airings) — raw:" << body.left(800);
+        emit liveProgrammeLoaded(QVariantMap{});
+    });
+}
+
+void PlexBackend::fetchLiveGuide(const QString &providerId, const QVariantList &channels) {
+    const QString uri = serverUrl(), token = serverToken();
+    if (uri.isEmpty()) { emit liveGuideLoaded(QVariantMap{}); return; }
+
+    // The whole lineup off one grid request. The window starts where
+    // fetchLiveProgramme's does — everything that has not ended — and runs a few
+    // hours out, which is what buys the "next" column: a channel list asks this
+    // once and reads both listings out of the answer, where a request per
+    // channel would be sixty of them for a screen the viewer is scrolling past.
+    //
+    // A programme longer than the window leaves that channel with a now and no
+    // next, which is the honest answer at that point anyway: what follows a
+    // four-hour test match is not yet news.
+    constexpr qint64 kGuideWindowSecs = 4 * 60 * 60;
+    const qint64 now   = QDateTime::currentSecsSinceEpoch();
+    const qint64 until = now + kGuideWindowSecs;
+    // Room for a handful of airings on each channel — half-hour listings across
+    // four hours is eight — with a floor under a short lineup and a ceiling over
+    // a long one, since the container is a page the server has to build.
+    const int size = qBound(200, int(channels.size()) * 8, 1500);
+
+    QUrl url(uri + "/" + providerId + "/grid");
+    url.setQuery(QStringLiteral("sort=beginsAt&endsAt>=%1&beginsAt<=%2"
+                                "&X-Plex-Container-Start=0&X-Plex-Container-Size=%3")
+                 .arg(now).arg(until).arg(size));
+
+    auto *reply = plexGet(url, token);
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, providerId, channels, now, size]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 498) {
+                handle498([this, providerId, channels]{ fetchLiveGuide(providerId, channels); });
+                return;
+            }
+            // Not an errorOccurred, for the reason fetchLiveProgramme gives: a
+            // guide the server will not serve costs the list its listings and
+            // nothing else. Every channel still tunes.
+            qDebug() << "[Plex] Live guide fetch failed:" << reply->errorString();
+            emit liveGuideLoaded(QVariantMap{});
+            return;
+        }
+        const QJsonArray airings = QJsonDocument::fromJson(reply->readAll())
+                                   .object()["MediaContainer"].toObject()["Metadata"].toArray();
+
+        // Each airing under the channel it is on. The match is airingIsOnChannel's
+        // — the guide files an airing under whichever of the channel's names its
+        // EPG provider uses — so it is tried against every channel until one
+        // takes it, and an airing on a channel not in the lineup falls through.
+        QHash<QString, QVariantList> byChannel;
+        for (const auto &av : airings) {
+            const QJsonObject meta = av.toObject();
+            const QVariantMap p = airingProgramme(meta);
+            // No window, no listing: without one there is no saying whether this
+            // is what is on or what is next, which is all a guide row says.
+            if (p.isEmpty() || p.value("endsAt").toLongLong() <= 0
+                            || p.value("beginsAt").toLongLong() <= 0) continue;
+            for (const QVariant &cv : channels) {
+                const QVariantMap channel = cv.toMap();
+                if (!airingIsOnChannel(meta, channel)) continue;
+                byChannel[channel.value("channelId").toString()].append(p);
+                break;
+            }
+        }
+
+        // Picked by clock rather than by position in the answer: the sort is
+        // asked for, not promised, and a guide can carry two overlapping airings
+        // on one channel — of which the later-starting is the one showing.
+        QVariantMap guide;
+        for (const QVariant &cv : channels) {
+            const QString id = cv.toMap().value("channelId").toString();
+            QVariantMap row;
+            for (const QVariant &pv : byChannel.value(id)) {
+                const QVariantMap p  = pv.toMap();
+                const qint64 begins  = p.value("beginsAt").toLongLong();
+                const qint64 ends    = p.value("endsAt").toLongLong();
+                if (begins <= now && ends > now) {
+                    if (!row.contains("now")
+                        || begins > row.value("now").toMap().value("beginsAt").toLongLong())
+                        row["now"] = p;
+                } else if (begins > now) {
+                    if (!row.contains("next")
+                        || begins < row.value("next").toMap().value("beginsAt").toLongLong())
+                        row["next"] = p;
+                }
+            }
+            if (!row.isEmpty()) guide[id] = row;
+        }
+
+        // One line per read of the guide, the way the single-channel fetch logs
+        // one: it says at a glance whether the grid route answered for this
+        // lineup, and a count equal to the page size says the answer was cut off
+        // at the container rather than at the window.
+        qDebug() << "[Plex] Guide:" << guide.size() << "of" << channels.size()
+                 << "channels listed, from" << airings.size() << "airings"
+                 << (airings.size() >= size ? "(page full — listings may be missing)" : "");
+        emit liveGuideLoaded(guide);
     });
 }
 

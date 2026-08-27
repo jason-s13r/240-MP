@@ -19,6 +19,12 @@ FocusScope {
     property string sessionId:    navParams.sessionId    || ""
     property int    viewOffset:   navParams.viewOffset   || 0
     property string itemTitle:    navParams.title        || ""
+    // Enough of an episode's place in its show to name it on mpv's OSD. Plain
+    // properties rather than reads off navParams, because autoplay swaps the
+    // episode under the player without navigating (see advanceToEpisode).
+    property string showTitle:     navParams.grandparentTitle || ""
+    property int    seasonNumber:  navParams.parentIndex      || 0
+    property int    episodeNumber: navParams.index            || 0
     property var    audioStreams:     navParams.audioStreams     || []
     property var    subtitleStreams:  navParams.subtitleStreams  || []
     property int    audioIdx:    0
@@ -41,6 +47,25 @@ FocusScope {
     // Show/season ratingKey a shuffle card draws its episodes from; empty for
     // every other kind of playback, which advances sequentially.
     property string shuffleScope:       navParams.shuffleScope || ""
+
+    // Cover art for mpv's OSD title block, at a size the OSD scales down from
+    // rather than up to — the app crops it to the window's own pixels.
+    property string posterUrl: navParams.posterUrl || ""
+    // Certificate for the OSD, which prints it under the clock. Plex hangs it
+    // off the episode where it has one; blank means that corner stays empty.
+    property string contentRating: navParams.contentRating || ""
+
+    // The top line of that block: what this one item is. An episode carries its
+    // SxxEyy, because an episode name on its own ("MAGIC XYLOPHONE") does not
+    // say which one of anything it is. The show goes on the line beneath it
+    // (showTitle), so it is not repeated here.
+    function _pad2(n) { return n < 10 ? "0" + n : "" + n }
+    readonly property string osdTitle: {
+        var sxe = (showTitle && seasonNumber > 0 && episodeNumber > 0)
+                  ? "S" + _pad2(seasonNumber) + "E" + _pad2(episodeNumber) : ""
+        if (!sxe) return itemTitle
+        return itemTitle ? (sxe + ": " + itemTitle) : sxe
+    }
 
     property bool stoppedReported:    false
     property bool playbackStarted:    false
@@ -211,6 +236,13 @@ FocusScope {
     }
 
     function doStartPlayback(offsetMs) {
+        // Set immediately before the launch that consumes it — a Plex stream URL
+        // is an opaque /library/parts/... path, so mpv has no name of its own.
+        mpvController.setNowPlaying(osdTitle, showTitle, posterUrl, contentRating)
+        // And who it is coming from, for the OSD's corner — the same pair the
+        // app keeps beside its own clock while browsing.
+        mpvController.setNowPlayingSource(plexBackend.get_active_server_name(),
+                                          plexBackend.get_active_user_name())
         if (isTranscoding) {
             // Transcode covers the full timeline (requested at offset 0), so seek mpv
             // to the resume point. This keeps everything before offsetMs seekable, so
@@ -257,6 +289,9 @@ FocusScope {
                 // Fallback transcode was requested at offset 0 (full timeline), so seek
                 // mpv to the resume point — keeps everything before it seekable.
                 var sub = buildSubArgs()
+                mpvController.setNowPlaying(osdTitle, showTitle, posterUrl, contentRating)
+                mpvController.setNowPlayingSource(plexBackend.get_active_server_name(),
+                                                  plexBackend.get_active_user_name())
                 mpvController.loadAndPlay(url, viewOffset / 1000.0, audioIdx + 1, sub.track, sub.urls, [], false, -1, 0.0, plexToken)
                 return
             }
@@ -282,6 +317,13 @@ FocusScope {
         partKey     = detail.partKey      || ""
         partId      = detail.partId       || ""
         itemTitle   = detail.title        || ""
+        showTitle     = detail.grandparentTitle || ""
+        seasonNumber  = detail.parentIndex      || 0
+        episodeNumber = detail.index            || 0
+        // Cover art follows the episode — autoplay changes what is playing
+        // without ever leaving this view. See the nav sites for the size.
+        posterUrl     = plexBackend.poster_url(detail, 300, 450, "grid")
+        contentRating = detail.contentRating || ""
         audioStreams    = detail.audioStreams    || []
         subtitleStreams = detail.subtitleStreams || []
         isTranscoding   = detail.forceTranscode  || false

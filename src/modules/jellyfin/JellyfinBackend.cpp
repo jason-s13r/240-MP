@@ -561,6 +561,7 @@ QVariantMap JellyfinBackend::formatItem(const QJsonObject &item) const {
     QString premiereDate = item["PremiereDate"].toString();
     map["releaseDate"]    = releaseDate.isEmpty() ? premiereDate : releaseDate;
     map["year"]            = item["ProductionYear"].toVariant();
+    map["contentRating"]   = item["OfficialRating"].toString();
     map["genres"]          = genres;
     map["duration"]        = item["RunTimeTicks"].toDouble() / 10000.0;
     map["viewOffset"]      = userData["PlaybackPositionTicks"].toDouble() / 10000.0;

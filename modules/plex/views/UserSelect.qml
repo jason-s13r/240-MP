@@ -10,6 +10,10 @@ FocusScope {
     signal goBack()
 
     property var users: navParams.users || []
+    // Opened from the corner status line as a quick profile switch rather than as
+    // part of the auth flow, the way ServerSelect reads the same flag: return to
+    // the menu it was opened over instead of pushing a fresh Libraries on top.
+    property bool switching: navParams.switching === true
     property string errorMsg: ""
 
     function titleFor(userId) {
@@ -18,11 +22,24 @@ FocusScope {
         return ""
     }
 
+    // Pre-highlight the profile already in use, the way ServerSelect
+    // pre-highlights the active server. Only on a quick switch: the auth flow
+    // arrives here with no active profile to point at. Run again when the list
+    // lands, since it usually arrives after this view does.
+    function preselectActive() {
+        if (!switching || users.length === 0) return
+        var activeName = plexBackend.get_active_user_name()
+        for (var i = 0; i < users.length; i++) {
+            if (users[i].title === activeName) { userList.currentIndex = i; return }
+        }
+    }
+
     Connections {
         target: plexBackend
 
         function onUsersLoaded(loadedUsers) {
             userSelectRoot.users = loadedUsers
+            userSelectRoot.preselectActive()
         }
 
         // plex.tv wants the profile's PIN before it will switch.
@@ -42,7 +59,9 @@ FocusScope {
         }
 
         function onAuthSuccess() {
-            if (navParams.reauth) {
+            if (userSelectRoot.switching) {
+                userSelectRoot.goBack()
+            } else if (navParams.reauth) {
                 userSelectRoot.navigateTo("Libraries.qml", {})
             }
         }
@@ -59,6 +78,7 @@ FocusScope {
             plexBackend.load_users_from_cache()
         }
         if (users.length > 0) userList.currentIndex = 0
+        preselectActive()
     }
 
     focus: true

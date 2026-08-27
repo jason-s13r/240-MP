@@ -140,8 +140,11 @@ A real example (Plex) — note `requires_auth`, dynamic options, and apply slots
 | `get_module_settings_schema(moduleId)` | Returns the module's settings array |
 | `invoke_module_action(moduleId, slotName)` | Routes to the registered backend via `QMetaObject::invokeMethod` |
 | `get_module_auth_state(moduleId)` | Returns the module's auth state (for `requires_auth` settings) |
+| `twelve_hour_clock()` | Whether every clock in the app reads 12-hour (see below) |
 | `getCustomColorScheme()` | Returns the user's custom color scheme |
 | `listDirectories(path)` / `parentDirectory(path)` / `homePath()` | Helpers for `directory_browser` |
+
+**The clock format is resolved in one place.** The app has no 12/24-hour setting of its own — the weather module owns the only `hours_format` there is — so `twelve_hour_clock()` answers for the whole app: an *enabled* module offering that setting speaks for it, 24-hour when none does. It finds that module by the setting key rather than by module id, so the id stays stated once (in `main.cpp`). `Main.qml` mirrors it as `root.twelveHour`, re-asking on any `moduleSettingChanged` for `hours_format` or `enabled`; `MpvController` asks it directly to tell the OSC script how to print a time.
 
 ### Signals
 
@@ -250,6 +253,42 @@ app constants →
 ### Custom OSC (Lua)
 
 The on-screen controls mpv shows during playback are custom Lua scripts in `scripts/` (`mpv-osc.lua` for normal playback, `mpv-osc-ambient.lua` for Ambient Mode), loaded via mpv's `--script=` flag. Options are passed in with `--script-opts=` (e.g. `transcode-offset=<sec>`). The remote's key events reach these scripts through the `keypress` IPC bridge described above.
+
+#### What the OSC shows, and where the app tells it
+
+While the menu is up the script lays a **~30% black scrim** over the whole frame, so white controls are not read against a white shot. It is drawn first, and cut away over the poster: mpv draws `overlay-add` art *under* a script's ASS, so without that hole the art would be dimmed twice. `assdraw`'s `rect_cw` plus `rect_ccw` makes the hole in one path, with a 1px `C_WHITE` hairline round the art afterwards so a poster with dark edges does not bleed into the dimmed frame.
+
+The **top-left title block** answers what the seek bar never can: the bar says how far in you are, not what you are in. It is art beside two lines — the top one **what is playing** (the film, the episode as `S01E01: Magic Xylophone`, the video), the one under it **what that belongs to** (the show, the channel; nothing for a film, which names itself). Both lines are measured against the art beside them rather than against the font, so the block reads as one object.
+
+**`MpvController::setNowPlaying(title, showTitle, posterUrl, contentRating, label, posterAspect, fitPoster, airingBeginsAt, airingEndsAt)`** feeds that block. A module calls it immediately before `loadAndPlay()`, which consumes and clears it, so a caller that sets nothing falls back to mpv's own `media-title` — right for a local file, useless for a streamed one (Plex hands out `/library/parts/…`, Jellyfin `master.m3u8`). Not for playlists: the `--force-media-title` it also sets would pin one name over every entry, which is why Local Files and Ambient Mode set nothing. Plex, Jellyfin and Emby set it again when autoplay swaps the episode under the player. **`setNowPlayingSource(server, profile)`** is the session half of it — the same `SERVER | PROFILE` strip the app keeps in its own corner, drawn beside the OSC's clock.
+
+**`updateNowPlaying(title, showTitle, contentRating, airingBeginsAt, airingEndsAt)`** is for the one case a launch-time block cannot cover: text that changes while the *same* stream keeps playing. A Plex live channel rolls from one programme to the next without mpv ever loading a file, so the JSON the script read at startup goes stale where a new file would have replaced it. It pushes those fields over IPC as `script-message 240mp-nowplaying`, and the script redraws if the menu is up (a script-message carries only strings, so the numbers go through `tonumber` on the way back). The art is not among them: what it shows (the channel) has not changed, and re-sending it would mean another round trip for the same bitmap.
+
+The title and show reach the script as a **JSON file** (`nowplaying-file=<path>` in script-opts) for the same reason the subtitle names do: script-opts is one comma-separated list, and a title is exactly the kind of string that has a comma in it. A path is not.
+
+The **poster takes a round trip**, because `overlay-add` cannot scale — it draws raw premultiplied BGRA at exactly the size given, and only the script knows the window's OSD resolution:
+
+1. The script sends `script-message 240mp-poster-request <w> <h>` the first time it draws the menu (and only if the JSON said a poster exists).
+2. `MpvController` sees it as a `client-message` on the IPC socket, fetches the art through an `AppNamFactory` manager (so it is usually a cache hit on art the browse screen already pulled, and gets the `*.plex.direct` leniency), cover-crops it, fades it to 45% — premultiplied alpha means scaling all four channels is a uniform fade, and mpv's overlay has no opacity of its own — and writes it raw to a temp file.
+3. It answers `script-message 240mp-poster-ready <file> <w> <h> <stride>`; the menu redraws twice a second, so the art appears a moment later.
+
+Since art of the wrong size can only sit small or spill out, the script **checks the answer against what it currently wants** and, on a mismatch, drops it and asks again. That covers a window resized after the first request and a reply meant for the previous file arriving late; both numbers are logged (`poster request WxH`, `poster ready WxH`). `MpvController` drops a fetch that finishes after the next launch for the same reason, so autoplay cannot leave the previous episode's art on screen. The overlay draws over the video whether or not the menu is up, so it is removed on **both** teardown paths — the keypress that closes the menu and the auto-hide timer.
+
+`posterAspect` is the shape the art is drawn in, width over height: `0` keeps the 2:3 of cover art, and a module handing over something else says so (`1` for a channel avatar, `16/9` for a video thumbnail). `fitPoster` says the art is shown **whole inside** that box rather than cover-cropped to fill it — cover art of any shape can lose its edges, but cropping a wide station logo to a square cuts the name out of it, the same distinction `PosterCell.logoArt` draws on the browse screen. A fitted poster is backed a shade off black instead of being left transparent: the script cuts its scrim away over the art, so undimmed frame would otherwise come through around a logo's transparent margins.
+
+**The transport measures a programme when there is no file to measure.** `airingBeginsAt` / `airingEndsAt` are the guide's window as epoch seconds; both `0` (the default, and the only right answer for a file) leaves the OSC reading mpv's `duration` and `time-pos`. Live TV needs it because a live stream has no length at all — the bar would sit at nothing and both times would read `0:00`.
+
+Only the **length** comes from the clock, though. The **motion** along it stays mpv's `time-pos`, and that distinction is the whole design: pausing a live stream does not pause the broadcast, but it does stop the viewer moving through the programme, and after a five-minute pause they are five minutes further *behind* the broadcast rather than five minutes further *through* it. A script reading `os.time()` would get that backwards, so it does not.
+
+Position is therefore `time-pos + transcode_offset` — the same arithmetic that already places a Plex transcode resumed part-way through a file, which is the identical problem (the stream starts some way into the thing being measured). `MpvController::updateNowPlaying` recomputes that offset as `(now − airingBeginsAt) − time-pos` and pushes it with each new programme, because only the app has both halves. It is **re-anchored, never accumulated**: mpv's clock runs straight through a programme change, so the offset that placed the stream inside the old programme would place it an hour into the new one.
+
+The right-hand time becomes a **countdown** (`-12:57`) rather than a length: what a file has left to run is a fact about the file, what a programme has left is a fact about the clock, and the sign tells them apart at a glance.
+
+**`ENDS 21:45`** sits left of STOP: when what you are watching finishes, as a wall-clock time. "45 minutes left" is a number you have to do arithmetic on; the time itself is the answer. It is always **now plus what is left to run**, which is the one form that survives a pause — a film held for ten minutes finishes ten minutes later, and so does a live programme, because pausing puts the viewer that far behind the broadcast and they reach its end that much after it airs. Drawing the guide's `airingEndsAt` directly would be right only until the first pause. A live channel reaches this line at all because `total` is the programme's length by then, so the same expression serves both and there is no live branch here.
+
+**Track info** (`AUDIO:` / `SUBTITLE:`) sits at the **foot of the controls**, under the button row, at three-quarters the OSC's font size: a footnote to the bar, not a heading over the picture, and the corner it used to occupy is the title block's now.
+
+The **current time** sits top right, where the app's own corner clock is, so bringing the OSD up does not lose it. Right-aligned on the block's second line, under it, is one of two things and never both: the **content rating**, boxed the way a certificate card is (text in a border — those marks are trademarks, and ASS draws vectors and text, not bitmaps), or a **plain label** for a module with no certificate, which is where YouTube names the playlist a video is playing out of. All three video-server backends carry `contentRating` (Plex's `contentRating`, Jellyfin's and Emby's `OfficialRating`); `MpvController` strips the region Plex sometimes prefixes (`de/16` → `16`).
 
 ### Raspberry Pi headless hand-off (EGLFS)
 
@@ -537,9 +576,103 @@ FocusScope {
 - `navParams.fromAppStartup` is `true` only when the app booted straight into this module because it's the configured **Start On Module** — never when the user navigated in from the main menu. `Main.qml` sets it on the startup-module `setSource`; a module's `Root.qml` forwards it by passing `navParams` into its first `navigateTo`. Use it to gate boot-only behaviour such as Ambient Mode's Auto-Launch Playback, so the module's normal screens stay reachable from the menu.
 - A view that emits `navigateTo` from its own `Component.onCompleted` must defer it with `Qt.callLater` — the router's `Connections { target: internalLoader.item }` only rebinds after `setSource()` returns, so a synchronous emit goes out before anything is listening.
 
+## Poster Art
+
+Off by default. The global `poster_grid` app setting (Settings → APPLICATION) switches the media modules between text rows and cover art. `Main.qml` mirrors it as `root.posterGrid`, which views bind the same teardown-safe way they bind `root.hints`.
+
+The building blocks are shared and backend-agnostic: a host passes resolver functions (`posterSource`, `titleText`, …) and the component never learns which backend the items came from. [PosterGrid](#postergrid-viewscomponentspostergridqml) is the tiled browser, [PosterShelf](#postershelf-viewscomponentspostershelfqml) one horizontal row under a heading, [ShelfList](#shelflist-viewscomponentsshelflistqml) a stack of those, and [PosterCell](#postercell-viewscomponentspostercellqml) the single cell all of them draw.
+
+### Plex
+
+`Items.qml` swaps its `ListView` for a [PosterGrid](#postergrid-viewscomponentspostergridqml) on media lists only — directory rows (hubs, collections, playlists, categories) have no artwork and stay as text — and the movie / episode / show / season detail views show the poster above their action buttons, moving their list section alongside it rather than below. The show and season views also draw each sub-list row's own art left of its title, in a slot reserved for every row so titles stay aligned.
+
+The home screen (`Libraries.qml`) becomes a shelf per library, each holding **that library's whole menu as tiles** followed by whatever it has in progress. A tile only appears when the library actually has that thing, which costs `check_section_capabilities` per library plus one Continue Watching fetch covering all of them; `capabilitiesLoaded` now carries the `sectionId` it answered for, without which several libraries cannot be probed at once (`Library.qml` guards on it too). The menu is one `ListView` of mixed entries — `{kind: "row"}` and `{kind: "shelf"}` behind a `Loader` delegate — with focus never leaving it: Up/Down step entries whatever their kind, Left/Right are forwarded to the selected shelf through `PosterShelf`'s `moveLeft()`/`moveRight()`, which is what `highlighted` exists for.
+
+**LIVE TV** is a shelf too, on a server whose DVR has a lineup: the same spine card leading the row (it opens `LiveChannels.qml`, the full list the row used to be) followed by one **square** cell per channel, carrying the station logo the EPG supplies — `PlexBackend::live_channel_logo_url(channel)`, which passes an already-absolute provider URL straight through and hangs a token on a server-relative one, fetching it raw rather than through `/photo/:/transcode` so the logo's transparency survives into the light themes. Those cells are `logoArt`: a station's mark is not cover art, so it is fitted whole inside the square and held an eighth of the cell off its edges — cropped to fill, a row of them reads as one continuous band and a wide mark loses its ends. The channel number rides the foot of the cell (`cornerTagSource`), in the margin the mark gives up, and a station the guide has no logo for falls back to `PosterCell`'s titled card carrying number and name, which is why a lineup with no artwork at all still reads.
+
+That row runs at `shelfPosterH * 2/3` — one cover's *width*, and square, so it measures the same step as every other row on the screen instead of running wider than the posters above and below it. A mark stays recognisable that small, the way a YouTube channel's avatar does, and the height the shorter row gives back buys more of the menu. Its spine measures against that shorter height so both shelves' spines come out one width. The lineup joins the capability probes in the gate `resolveMenu()` holds the menu on, and an empty one leaves LIVE TV the nav row it has always been.
+
+Watching one, the OSD names the **programme**, not just the channel: `tune_channel` gets the airing's *name* for free from the DVR's grab metadata, and `load_live_programme(channel)` asks the guide for the rest — the provider proxy's `grid` route, narrowed server-side to `beginsAt<=now` and `endsAt>=now`, so every airing that comes back is on air and only the channel has to be matched. Which of the channel's names the guide files an airing under varies by EPG provider, so `airingIsOnChannel` tries the id, the number and the call sign against every `channel*` field on the airing's `Media` entries. `LivePlayer.qml` checks once a minute against the airing's own `endsAt` rather than scheduling a timer to it — live sport runs over — and pushes each change through `MpvController::updateNowPlaying`, since the stream never restarts. That window does triple duty: it schedules the next look, it is what the OSD's seek bar and times measure, and it is the `ENDS 21:45` line — so it is taken **only** from the guide. The window on the grab's own `Media` entry looks like the same thing and is not: it describes the block the tuner is grabbing, and a programme listed 21:30–22:30 came back from it ending at 22:00, which is exactly what the OSD then showed. `tune_channel` therefore emits the name and blanks the window, and the guide is asked as soon as the stream is handed to mpv rather than on the refresh Timer's first tick, so the bar is there when the OSD is. Its answer usually beats mpv's first frame, when the launch file is already written and no IPC socket exists yet to push it down, so `onPositionChanged` pushes the block once when playback actually starts. A guide that answers nothing costs the OSD a programme name and that line, and nothing else: the top line falls back to the channel, and the station logo beside it is the same `live_channel_logo_url` art the shelf uses, square and fitted whole. The channel list can read that same guide for the whole lineup before anything is tuned — see [TV Guide](#tv-guide).
+
+The module's **Libraries** setting (a `multiselect_submenu`, keyed `<machineId>_<sectionKey>` so the same section number on two servers is two choices) hides a library everywhere, not only from the library list. `/hubs/continueWatching` answers for the whole server, so `load_continue_watching` runs its items through `enabledLibraryItems` *before* flattening seasons — a season in a switched-off library would otherwise cost a request to expand items nobody will see.
+
+`PlexBackend::poster_url(item, w, h, context)` builds the URL. It takes the whole item map so the "which artwork for this type" rule lives in one place, and `context` picks two independent things — *which* artwork, and whether it is cropped to fill a fixed-shape cell or fitted whole:
+
+| `context` | Artwork for an episode | Fit |
+|---|---|---|
+| `"grid"` (default) | the show's poster | cropped to the cell |
+| `"shelf"` | own still → season → show | cropped (the cell is cut to the art's own shape, so nothing is lost) |
+| `"detail"` | own still → season → show | fitted whole |
+| `"badge"` | the season's poster → the show's, **never** its own still | cropped to the cell |
+
+A grid gives an episode its show's poster so a whole library tiles as one shelf; a shelf is a handful of items, where the episode's own still identifies it better. `"badge"` is the corner overlay that puts back what a still gives up. `poster_aspect(item, context)` returns the shape the art `poster_url` *would* return — `16/9` for an episode's own still, `2/3` for cover art — so shelves can cut each cell to its own width; that is why the rule lives beside the fallback chain instead of being guessed in QML. Resizing is server-side (`/photo/:/transcode`), with the token as a query param because a QML `Image` cannot set the `X-Plex-Token` header.
+
+#### SERVER | PROFILE status line
+
+`modules/plex/views/StatusLine.qml`, instantiated once by the module's `Root.qml` so it outlives a view swap. Which server you are browsing and who you are browsing it as change what every list contains, and nothing else says them once you are past the main menu.
+
+Only the main menu makes it a nav target (`Root.statusNavigable`): deeper in, switching would throw away the path that got you there, so the switch lives one BACK away. A view hands focus up to it by calling `moduleRoot.focusStatus()` when a step upward runs off the top of its own content — the call returns whether the corner took it, so the view falls back to its usual wrap when there is nothing up there. `Root.qml` dims the loader while the corner has focus, since every view here draws its selection from a `currentIndex` rather than from focus.
+
+The line claims its width from the shell through `root.statusReserve` (a `Binding`, so the claim is released when the module unloads) and anchors at `root.statusMargin` on `root.cornerCenterY`. `root.cornerReserve` is what anything at the right end of the top row subtracts from its own width — `AppBar`'s, and the IP address in `views/Settings.qml`.
+
+`AppBar` also gained `subtitleElide`: a name reads from the left so its tail goes, but a **breadcrumb**'s tail says where you actually are, so `Items.qml` sets `Text.ElideLeft`. It builds that breadcrumb from a `crumbs` array carried in `navParams`, each hop appending the title of the row it opened, so a category chain reads `MOVIES > CATEGORIES > DIRECTOR > STEVEN SPIELBERG` rather than four screens that all say `MOVIES`.
+
+### YouTube
+
+With the setting on, `Channels.qml` draws its channel list as a grid of profile pictures — square, not 2:3, because an avatar is — keeping the A–Z panel and its Right-to-browse hand-off. A channel's RSS feed carries no artwork, so `YouTubeBackend::channel_art_url(channelId, size)` answers from a cache the module scrapes in the background; `channelArtLoaded` announces each one, and the view bumps an `artRev` counter that its `posterFor()` reads, so cells re-resolve in place rather than the model being reassigned (which would reset the grid under the selection). `channel_art_for(id, name, size)` is the same lookup by *name*, for Watch Later, History and playlist entries, which carry no channel ID.
+
+`Subscriptions.qml` — the module's one video list, serving the feed, a channel, a playlist, Watch Later and History — draws each row's own thumbnail from `video_thumb_url(videoId)`, which needs no cache and no signal: the URL follows from the ID, and `mqdefault` is the only stock size that is 16:9 without letterbox bars. In **channel** and **playlist** modes that view also takes the shape of a Plex season — the artwork heads the left column with its name and video count beside it, and the list moves right of it, `sectionX`/`sectionW` exactly as `ItemSeason.qml` computes them. A channel is headed by its avatar and drops the per-row channel name (the header says it); a playlist is headed by its own cover, `playlist_thumb_url(playlistId)`, and keeps it, because a playlist mixes channels.
+
+The module's own menu (`Items.qml`) becomes a mixed list of nav rows and shelves behind one `Loader` delegate, focus never leaving the `ListView`, Left/Right forwarded to whichever shelf holds the selection. Each shelf leads with a **card** — a `PosterCell` with no art, whose title is read up it as a spine — that opens the full list the shelf replaced. The menu holds at `LOADING` until `channelsLoaded` arrives (or a 5s timer gives up) rather than drawing a text row that becomes a shelf a second later; a list that never comes back leaves `CHANNELS` as the nav row it has always been.
+
+`Playlists.qml` goes the same way one level in: each playlist is drawn as a `ShelfList` shelf of its own videos. It costs no extra network — `load_playlists()` already fetches every playlist's contents to count them.
+
+`Video.qml` is the screen a video gets before it plays — description, counts, actions — the step a Plex episode takes through `Item.qml`, and laid out the same way. Every list in the module now lands there rather than in the Player. `video_detail()` serves whatever is held (a channel feed carries the description in full, so a video reached from Subscriptions has its text before the screen paints) and `load_video_detail()` fetches the rest, announcing it with `videoDetailLoaded`.
+
+Both YouTube views reach `youtubeBackend` from inside bindings, which is the one place that needs the null guard `root.hints` exists for: a context property reads back null while a view's `Loader` tears down and every binding runs one last time.
+
+Everything the module fetches goes to **one host**, which answers an address asking for too much by refusing all of it — every feed comes back `404`, YouTube's own channel included. Feeds are cached to disk (`youtube_feed_cache.json`), sent a few at a time, and a pass that mostly fails pauses the module for `kThrottlePauseMs`, remembered across restarts. **Playlists are cached harder** (`youtube_playlist_cache.json`, `kPlaylistCacheTtlMs`), because they cost the most: a `yt-dlp` subprocess over as many as 500 entries. The longer window is affordable because the refresh is invisible — `ensurePlaylistsFresh()` hands the waiting view whatever is held before it queues anything, including a caller arriving while a refresh is already in flight.
+
+QML fetches those images through the QML engine's own `QNetworkAccessManager`, which is separate from the one each backend owns. `AppNamFactory` (`src/net/`, installed in `main.cpp` before `engine.load`) gives that manager a 64 MB `QNetworkDiskCache` under `<dataRoot>/cache/images` and the same narrow `*.plex.direct` certificate leniency as `PlexBackend::ignoreSslErrors` — without which posters silently fail on a system with an incomplete CA bundle.
+
+## TV Guide
+
+Off by default, and independent of the artwork above it. The global `live_epg` app setting (Settings → APPLICATION, **TV Guide**) puts what is on each live channel beside the channel, read from the DVR's own EPG. `Main.qml` mirrors it as `root.liveEpg` the way it mirrors `root.posterGrid`, and `LiveChannels.qml` binds it through `root` for the same teardown reason.
+
+The two switches give the live lineup four layouts, all of them the same `ListView` with the same keys and the same selection:
+
+| `live_epg` | `poster_grid` | `LiveChannels.qml` draws |
+|---|---|---|
+| Off | Off | the list of channel names, its highlight hugging the line rather than banding the row |
+| Off | On | the **channel page** — a row per channel: the station's mark, then its number over its name, which has the whole row to run in |
+| On | Off | each name with the time what is on it started, a rule under that time measuring how much of it has gone, and its name |
+| On | On | the same page as a **guide page** — two more columns beside each channel: what is on with its bar and window, and what is on next |
+
+The artwork is what decides the *shape* — a mark needs more height than a line of text does, so `artPage` (`root.posterGrid`) is what turns the lineup from a list of names into a page of channels. The guide then fills that page's right-hand half or leaves it empty: one delegate draws both, the listing columns carrying `visible: channelsRoot.epg`, and the name widens into the room they gave up (`nameCol`) rather than stopping short in front of an empty row. The headings drop to `CHANNEL` alone the same way.
+
+That page is the only screen in the app laid out as a table, so its columns are measured once on `channelsRoot` (`chanX`, `nowCol`, `nextX`, …) and read by both the heading row and every delegate — a heading cannot drift off the column it names. It takes the taller slot the poster views use, clipped to a **whole** number of rows: a row three lines deep cut through the middle by the list's edge reads as a fault, where a single line of text clipped by the same edge does not. Each column's text stops one gutter short of the next column, or two runs of text meet in the middle of the gutter and the row reads as one sentence. Long lines scroll on the selected row and clip on the others, the idiom every text list in the app uses; the station logo is `PosterCell`'s `logoArt` again, the same art the shelf draws, so a channel with no logo falls back to the titled card rather than to a hole in the column.
+
+In **both** text layouts the channel number is a column of its own, measured off the *widest number the lineup actually has* (`widestNumber` through a hidden ruler `Text`, so nothing assumes the face is monospaced) — otherwise a lineup running 1 to 12 starts "ONE" a character further left than "TEN" and the names read as two lists. The plain row keeps its number and name as one moving line inside the clip, so the highlight still wraps the words and the scroll still carries them whole; only where the name starts is new. A column sized for three digits a lineup does not use would be width taken off the names it does. The time column is measured the same way, off the widest reading the clock writes (a 12-hour one carries its AM/PM), and for a sharper reason: a column taken as a *share of the row* is a fraction of the screen's width while the type in it is a fraction of the screen's height, so on a wide screen the column grows and the reading does not — and the gap that opens between the time and the programme name is width the name should have had.
+
+The bar is the playback OSD's seek bar at list size — an outlined box with an inset fill, measuring the same thing. In the text list there is no line of height to spare for one, so it takes its thin form (`ProgressLine`): a two-pixel rule under the start time, since the reading belongs to the clock beside it, and only as wide as that reading — run on to the column's own width it reads as a rule under the row rather than under the time. No border and no inset at that size — those would be the whole of it — so the track is the same ink held back to 35%, which every theme's palette answers for on its own. It is driven by the **wall clock**, not by mpv's: the OSD's reading has to stop when the viewer pauses, and nobody is watching these channels yet. One `nowSecs` property ticked every 15 seconds moves every bar and every countdown on the screen together; a bar across a half-hour listing moves about a pixel in that time, and nothing here is worth a repaint per second on a Pi.
+
+`PlexBackend::load_live_guide(channels)` answers the whole lineup with **one** request — the same provider-proxy `grid` route `load_live_programme` uses, over a window running from "has not ended" to four hours out, which is what buys the next column. Airings land under the channel they are on by `airingIsOnChannel`, the same match, tried against each channel until one takes it; `now` and `next` are then picked by clock rather than by position in the answer, since the sort is asked for and not promised and a guide can carry two overlapping airings on one channel. `liveGuideLoaded` carries `channelId -> {now, next}` with a channel the guide had nothing for **absent** rather than present and empty. `resolveLiveProvider` is the provider lookup both calls share, and hands back an empty identifier rather than an error, so each caller answers its own signal.
+
+A listing's **rating** rides with its times: after the window on the guide page (`12:56-13:26 [G]`), after the start time in the text list (`12:56 [G]`). The mark is the playback OSD's — a box around the rating, which is as official as this can honestly look, the real marks being trademarked artwork — drawn shorter than the line it sits beside, since a rating is a footnote to the time rather than a second reading of it, and it appears only where the guide carries one. In the text list it sits on the row's own centre line, with the programme it belongs to: the time beside it is held above centre to leave room for the rule under it, and a mark following that would sit off the row's line for no reason. A guide writes a rating with the body that issued it (`us:TV-14`, `nz/PG`) and a box this size has room for the rating or for both, so `ratingOf` keeps what follows the issuer: where the viewer is watching is not news to them. In the text list the mark has a column held open for it, measured off `widestRating` the same way the clock and the numbers are measured — held open for every row or for none, since a mark drawn wherever each row's own clock happens to end would set the column zigzagging down the page.
+
+The view re-reads the guide when the first programme in it ends, floored two minutes out — across a long lineup something ends most minutes, and the whole grid is one request — or in ten when the answer listed nothing on air anywhere, which is how long `LivePlayer.qml` waits on the same silence. A guide the server will not serve is not an `errorOccurred`: it costs the list its listings and nothing else, and every channel still tunes.
+
 ## Components (WIP)
 
 Shared QML components live in `views/Components/` (registered via `qmldir`, imported as `import Components`).
+
+### Clock (`views/Components/Clock.qml`)
+
+The wall clock in the top-right corner. A VCR always shows the time, so it is instantiated **once in `Main.qml`**, over the module loader — every screen carries it without a view having to draw it. Minutes, not seconds: a per-second repaint on a Pi buys nothing, though the tick still runs each second so the display turns over *on* the minute. 12- or 24-hour follows `root.twelveHour`.
+
+It hides while something else owns the display — `root.displayOwned`, a guarded mirror of `idleTracker.mpvActive || idleTracker.scriptActive` alongside `hints` and `appVersion`, since binding those context properties directly throws a TypeError when the root context is invalidated. A weather forecast or a takeover script draws its own full screen, clock included.
+
+The clock and a screen's header share the top row, so `root.cornerReserve` (the clock's own width plus a gutter, and any status line beside it — therefore wider for `11:59 PM` than for `23:59`) is what anything at the right end of that row subtracts: `AppBar`'s width, and the IP address in `views/Settings.qml`.
 
 ### AppBar (`views/Components/AppBar.qml`)
 
@@ -550,6 +683,90 @@ Shared QML components live in `views/Components/` (registered via `qmldir`, impo
 | `subtitle` | `string` | Optional context label (hidden when empty) |
 
 The icon is automatically colorized to the app accent color
+
+### PosterGrid (`views/Components/PosterGrid.qml`)
+
+Cover-art browser: a `GridView` of poster cells with one shared title line beneath it for the selected item (per-cell captions do not fit at 480p). The app's only 2D-navigable view.
+
+| Property | Type | Description |
+|---|---|---|
+| `model` | `var` | Item array, same model the text `ListView` uses |
+| `currentIndex` | `int` | Selected cell |
+| `posterSource` | `function(item, w, h)` | Returns the artwork URL, or `""` for none |
+| `titleText` | `function(item)` | Row label, also used on the placeholder card |
+| `rows` | `int` | Rows of art; the column count falls out of what fits |
+| `browseEnabled` | `bool` | Right on the last column emits `browseRequested` instead of wrapping |
+| `exitUpEnabled` | `bool` | Up off the top row emits `exitUp` instead of wrapping |
+
+Signals: `activated()`, `browseRequested()`, `backRequested()`, `exitUp()`. Methods: `positionAtCurrent(atBeginning)`, `moveTo(i)`.
+
+Rows are the fixed quantity and columns are whatever fits, so the grid narrows itself when the A–Z panel is up. A cell is exactly one poster plus one gutter in both axes — never `width / columns`, which pours the leftover into the column gap and makes the spacing read wider across than down; the grid instead picks whichever of two column counts wastes less. Wrap rules, since there is no other 2D view to copy: **Left/Right** move within the row and wrap at its ends; **Up/Down** move by a row and wrap top↔bottom into the same column, clamped to the last item.
+
+### PosterShelf (`views/Components/PosterShelf.qml`)
+
+One horizontal row of cover art under a section heading, and the unit `ShelfList` is built from. The heading is the shelf's primary text and the selected item's title is the caption beneath it. Everything sizes off the shelf's own height, so a host sets only width and height.
+
+| Property | Type | Description |
+|---|---|---|
+| `sectionTitle` | `string` | Heading above the row; empty takes no room |
+| `model` / `currentIndex` | `var` / `int` | Item array and selected cell |
+| `posterSource` / `titleText` | `function` | Same contract as `PosterGrid` |
+| `posterAspect` | `real` | Fallback cell shape when there is no per-item rule |
+| `posterAspectFor` | `function(item)` | Per-item cell shape — see below |
+| `badgeSource` | `function(item, w, h)` | Corner artwork URL, asked for on landscape cells only |
+| `badgeAspect` | `real` | Shape of that corner art (`2/3` cover art unless the host says otherwise) |
+| `captionSource` | `function(item)` | `{ top, bottom, corner }`, asked for on landscape cells only |
+| `cornerTagSource` | `function(item)` | Bottom-corner identifying label, asked for on **every** cell |
+| `logoArt` | `bool` | Cells hold logos, not cover art — see `PosterCell` |
+| `showTitleLine` | `bool` | Selected item's title beneath the row; off inside a `ShelfList` |
+| `headingMuted` | `bool` | Heading at the caption's size and colour, for a shelf whose cells name the row |
+| `highlighted` | `bool` | Whether this shelf holds the selection; set by a host driving it from outside |
+| `currentItemData` | `var` | The selected item (read-only) |
+
+Signals: `activated()`, `moveUp()`, `moveDown()`, `backRequested()`, `moved()`. Methods: `positionAtCurrent()`, `moveTo(i)`, `moveLeft()`, `moveRight()`.
+
+Cells share the shelf's height but not its width: with `posterAspectFor` supplied, each cell is cut to the shape of the art it holds, so a 16:9 still and a 2:3 cover both appear whole. Ragged widths are the cost, and the better trade here — a shelf is a handful of items, where `PosterGrid`'s uniform cells earn their crop.
+
+`badgeSource` and `captionSource` are asked only when `aspectFor(item) > 1`: a portrait cell is already cover art, so a cover-art badge would be the same picture twice. The gate lives here rather than in every host because it follows from the cell's shape. `cornerTagSource` is outside it — a number *identifies* the cell rather than describing artwork the cover already shows, so a square cell wants it as much as a wide one.
+
+**Left/Right** move along the shelf and wrap at its ends. **Up/Down** are *not* handled: a shelf never knows what is above or below it, so it reports them and the host decides.
+
+### ShelfList (`views/Components/ShelfList.qml`)
+
+A vertical stack of shelves — the sectioned browse view. Up/Down change shelf, Left/Right move along the focused one, so the whole thing is one 2D surface even though each shelf scrolls independently.
+
+| Property | Type | Description |
+|---|---|---|
+| `model` | `var` | `[{ title: string, items: array }]`, one shelf per entry |
+| `posterSource` / `titleText` | `function` | Same contract as `PosterGrid` |
+| `posterAspectFor` / `badgeSource` / `badgeAspect` / `captionSource` | | Forwarded to every shelf |
+| `shelfH` | `real` | One shelf's slot; two fit the 480p content box, the rest scroll |
+| `wrapVertically` | `bool` | Off when the stack is one section of a larger column — the ends emit `exitUp`/`exitDown` instead of looping |
+| `shelfIndex` / `itemIndex` | `int` | The two-part selection, for the host's saved list state (read-only) |
+
+Signals: `activated(var item)` — the item itself, since the host cannot look it up from one index — `backRequested()`, and `exitUp()`/`exitDown()` when `wrapVertically` is off. Methods: `focusEnd(atLast)`, the entry point for a host handing focus back in, and `setPosition(shelfIdx, column)`, which seats the selection before the delegates exist.
+
+Up and Down are **grid-like** — they land on the same column rather than wherever each shelf was left. The wanted `column` is kept separate from any shelf's index, the way a text cursor keeps its wanted column, so passing through a short shelf does not shrink it for every shelf after. It doubles as per-shelf memory: a shelf scrolled out of view is destroyed with its `currentIndex` and reads the column back when recreated.
+
+### PosterCell (`views/Components/PosterCell.qml`)
+
+One cover-art cell — artwork, titled placeholder when there is none, selection ring — shared by `PosterGrid` and `PosterShelf`. The ring is drawn on every cell at the same thickness and only coloured when selected, so nothing shifts as the selection travels. The gutter between neighbours is two rings wide, so adjacent rings meet exactly.
+
+`badgeArt` draws a second, smaller artwork over the bottom-left corner, inset a pixel with a 1px `surfaceColor` hairline so the two images separate. Its width is what a 2:3 cover measures at a third of the cell's height whatever shape `badgeAspect` says it is, so every badge takes the same bite out of the artwork.
+
+`captionTop`, `captionBottom` and `cornerLabel` are the words that go with it, named for where they sit: `captionTop` along the top edge, `captionBottom` along the bottom from wherever the badge leaves off, `cornerLabel` at the far end of that lower line. A line is an eighth of the cell tall, fixed rather than derived from the badge, so lines land at the same height on every cell in a row. Only the bottom line gives up width to `cornerLabel`; all of them are outlined in `surfaceColor`, since they lie over photography of any brightness.
+
+`logoArt` says the cell holds a **mark** rather than cover art — a station logo, drawn on whatever canvas the broadcaster chose. It is fitted whole instead of cropped to fill, and inset an eighth of the cell's height, so the cell reads as a box with a mark in it rather than as a picture that happens to stop at the border (which is what a row of them cropped to fill reads as). The overlays keep the cell's real corners, so `cornerTagLabel` lands in the margin the mark gives up.
+
+Such a cell is also **backed and bordered**, in the placeholder card's `tertiaryColor` hairline: a mark is as often black on transparent as white, and the app's background is black in every theme but one, so a logo left to sit on it can vanish outright. `logoBackdrop` is `Qt.tint(surfaceColor, rgba(.5,.5,.5,.18))` — a neutral veil over whatever the surface is rather than a colour of its own, which lifts a black surface to a dark grey and settles a light one without any theme naming a value. The placeholder takes the same shade, so a channel whose logo never arrived sits at the same weight as the ones beside it.
+
+`cornerTagLabel` is the Plex live lineup's channel number, at the foot of the cell in the same corner `cornerLabel`'s runtime reads from — the two never appear together, and `captionBottom` yields width to whichever is showing. It is its own property rather than the end of a caption line because the cells that want it are small squares with no room for a caption beside it; its line is floored at `root.sh * 0.025` (an eighth of a 50px square is a 6px digit, and a number that cannot be read is not worth the corner) and it is held `root.sh * 0.0104167` off its edges rather than the captions' single pixel, since it sits inside a bordered card whose rule it would otherwise touch.
+
+On the placeholder card a title past twice as tall as it is wide takes a quarter turn and is read up the card — a **spine**. Turning rather than stacking is what makes a long name fit: stacked, a word costs its length in height.
+
+### MarqueeText (`views/Components/MarqueeText.qml`)
+
+A single line that scrolls itself when it exceeds `maxWidth` (1500 ms pause → scroll → 2000 ms pause → reset). The idiom is hand-copied in every text list row; this is the shared copy the poster views use. Sizes its own width to the text so a highlight anchored to it hugs the glyphs.
 
 ### NfcCardWriter (`views/Components/NfcCardWriter.qml`)
 
