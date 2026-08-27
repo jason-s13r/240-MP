@@ -70,6 +70,7 @@ local C_BLACK = "&H000000&"
 local A_OPAQUE = "&H00&"
 local A_TRANS  = "&HFF&"
 local A_DIM    = "&H99&"  -- 40% opacity for unfocused seek fill
+local A_FAINT  = "&HC8&"  -- ~22% opacity for the hairline round the poster
 local A_SCRIM  = "&HB4&"  -- ~30% black over the video while the menu is up
 
 local function get_audio_str()
@@ -255,14 +256,15 @@ local function format_time(seconds)
     end
 end
 
--- Draw a filled rectangle with an optional border.
+-- Draw a filled rectangle with an optional border. The border is opaque unless
+-- a border alpha is passed.
 -- Uses ass:pos() (no \an tag) to match mpv's expected drawing coordinate origin.
-local function draw_rect(ass, x, y, w, h, fc, fa, bs, bc)
+local function draw_rect(ass, x, y, w, h, fc, fa, bs, bc, ba)
     ass:new_event()
     ass:pos(x, y)
     ass:append(string.format(
-        "{\\bord%d\\3c%s\\3a&H00&\\1c%s\\1a%s\\shad0}",
-        bs, bc, fc, fa))
+        "{\\bord%d\\3c%s\\3a%s\\1c%s\\1a%s\\shad0}",
+        bs, bc, ba or A_OPAQUE, fc, fa))
     ass:draw_start()
     ass:rect_cw(0, 0, w, h)
     ass:draw_stop()
@@ -328,9 +330,12 @@ local function draw_menu()
 
     -- A hairline round the art in the same white as every other element here,
     -- so a poster whose edges are dark does not bleed into the dimmed frame.
+    -- Faint, though: at full white it reads as a frame competing with the
+    -- controls rather than an edge on the art.
     -- Drawn after the scrim, not through it, or it would be dimmed with the video.
     if poster_shown then
-        draw_rect(ass, lm, block_y, poster_w, poster_h, C_BLACK, A_TRANS, 1, C_WHITE)
+        draw_rect(ass, lm, block_y, poster_w, poster_h, C_BLACK, A_TRANS, 1, C_WHITE,
+                  A_FAINT)
     end
 
     -- VCR OSD Mono is monospaced, so a character is 0.6em and a line's width is

@@ -130,6 +130,11 @@ public:
     // channel's names the guide files its airings under varies by EPG provider,
     // so the match is tried against all of them.
     Q_INVOKABLE void load_live_programme(const QVariantMap &channel);
+    // The same question asked of the whole lineup at once, for the channel list
+    // rather than the player: what is on now and what is on next, per channel.
+    // Answers with liveGuideLoaded. One guide request covers every channel, so a
+    // lineup costs the same as a single channel did.
+    Q_INVOKABLE void load_live_guide(const QVariantList &channels);
     Q_INVOKABLE void update_live_timeline(const QString &state);
     // Stops the live transcode for sessionId and forgets the tuned key, so the
     // server can release the tuner. Called on exit and before a channel change.
@@ -182,6 +187,11 @@ signals:
     // the guide has nothing to say. Emitted by tune_channel for the airing it
     // grabbed, and by every load_live_programme.
     void liveProgrammeLoaded(const QVariant &programme);
+    // The lineup's guide as load_live_guide read it: channelId -> {now, next},
+    // each an airing in the shape above. A channel the guide had nothing for is
+    // absent rather than present and empty, so a caller can ask by id and get
+    // nothing back. Empty when there is no guide to be had at all.
+    void liveGuideLoaded(const QVariant &guide);
 
     void dynamicOptionsReady(const QString &key, const QVariant &options);
 
@@ -223,9 +233,18 @@ private:
     QString videoQuality() const;
     QString clientId() const;   // UUID, stored in plex_auth.json
 
-    // Live TV guide helpers. fetchLiveProgramme is load_live_programme once the
-    // EPG provider is known; the other two read one guide airing.
+    // Live TV guide helpers. fetchLiveProgramme and fetchLiveGuide are the two
+    // public guide calls once the EPG provider is known; the other two read one
+    // guide airing.
+    //
+    // resolveLiveProvider hands `then` the identifier of the media provider that
+    // proxies the lineup and guide routes, looking it up when nothing has this
+    // session — a card or a deep link can reach the player without passing
+    // through the channel list. `then` is handed an empty string when there is
+    // no live provider to be had, so each caller answers its own signal.
+    void resolveLiveProvider(std::function<void(const QString &)> then);
     void fetchLiveProgramme(const QString &providerId, const QVariantMap &channel);
+    void fetchLiveGuide(const QString &providerId, const QVariantList &channels);
     // One EPG airing as liveProgrammeLoaded carries it. Empty when the object is
     // not an airing (a tune that produced no listing, a stray container entry).
     static QVariantMap airingProgramme(const QJsonObject &meta);

@@ -123,6 +123,10 @@ Window {
     // onAppSettingChanged. Views must bind root.posterGrid, never appCore.
     property bool posterGrid: false
 
+    // Live TV guide switch, read by the live channel list. Mirrored here for the
+    // same reason posterGrid is: views bind root.liveEpg, never appCore.
+    property bool liveEpg: false
+
     readonly property real sw: width
     readonly property real sh: height
 
@@ -140,6 +144,8 @@ Window {
                 root.currentTheme = value
             } else if (key === "poster_grid") {
                 root.posterGrid = (value === "On")
+            } else if (key === "live_epg") {
+                root.liveEpg = (value === "On")
             } else if (key === "screensaver_timeout") {
                 var sec = parseInt(value)
                 if (sec > 0) {
@@ -188,6 +194,7 @@ Window {
         }
 
         root.posterGrid = ((cfg.app && cfg.app.poster_grid) || "Off") === "On"
+        root.liveEpg    = ((cfg.app && cfg.app.live_epg) || "Off") === "On"
         root.twelveHour = appCore.twelve_hour_clock()
 
         var savedTheme = (cfg.app && cfg.app.color_scheme) || "Video 1"

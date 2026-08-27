@@ -112,6 +112,21 @@ FocusScope {
             moduleId: ""
         })
 
+        // TV Guide — what each live channel is showing, read from the DVR's own
+        // EPG and drawn beside the channel in the live lineup. Off by default:
+        // it is a guide request per screenful of channels that a bare list of
+        // names never made, and a lineup whose provider carries no listings has
+        // nothing to gain from it.
+        items.push({
+            type: "list_single",
+            key: "live_epg",
+            label: "TV Guide",
+            options: ["Off", "On"],
+            value: appSettings["live_epg"] || "Off",
+            description: "[ON] Show what is on now on each live TV channel\n[OFF] List live TV channels by name",
+            moduleId: ""
+        })
+
         // Auto Crop — default crop (panscan) state for every video. Off by default;
         // crop can still be toggled live during playback via the mpv OSC.
         items.push({
