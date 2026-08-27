@@ -167,14 +167,28 @@ QNetworkReply *PlexBackend::plexGet(const QUrl &url, const QString &token) {
     return reply;
 }
 
+// Plex's own POSTs and PUTs carry everything in the query string; the body is
+// empty. Qt warns on a POST with no content type and then assumes form encoding,
+// so the assumption is written down instead — the same header it would have
+// picked, stated rather than guessed, and the warning goes with it.
+static void setEmptyBodyHeaders(QNetworkRequest &req) {
+    req.setHeader(QNetworkRequest::ContentTypeHeader,
+                  QStringLiteral("application/x-www-form-urlencoded"));
+    req.setHeader(QNetworkRequest::ContentLengthHeader, 0);
+}
+
 QNetworkReply *PlexBackend::plexPost(const QUrl &url, const QString &token) {
-    auto *reply = m_nam->post(plexRequest(url, token), QByteArray{});
+    QNetworkRequest req = plexRequest(url, token);
+    setEmptyBodyHeaders(req);
+    auto *reply = m_nam->post(req, QByteArray{});
     ignoreSslErrors(reply);
     return reply;
 }
 
 QNetworkReply *PlexBackend::plexPut(const QUrl &url, const QString &token) {
-    auto *reply = m_nam->put(plexRequest(url, token), QByteArray{});
+    QNetworkRequest req = plexRequest(url, token);
+    setEmptyBodyHeaders(req);
+    auto *reply = m_nam->put(req, QByteArray{});
     ignoreSslErrors(reply);
     return reply;
 }
@@ -2756,7 +2770,8 @@ void PlexBackend::tune_channel(const QString &channelId, const QString &sessionI
         QString livePath = meta["key"].toString();
         if (livePath.isEmpty()) {
             QString msg = mc["message"].toString();
-            qDebug() << "[Plex] Tune produced no stream — raw:" << body.left(600);
+            qDebug() << "[Plex] Tune produced no stream on channel" << channelId
+                     << "— raw:" << body.left(600);
             emit errorOccurred("TUNE FAILED: " + (msg.isEmpty() ? QString("no playable stream") : msg));
             return;
         }
