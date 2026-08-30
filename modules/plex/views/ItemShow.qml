@@ -34,6 +34,21 @@ FocusScope {
     readonly property real sectionW: showPoster ? root.sw * 0.54375   //348
                                                 : root.sw * 0.76875   //492
 
+    // The action column's own geometry. A 2:3 poster drawn at the column's full
+    // width stands taller than the buttons under it have room for, so it is
+    // capped here: the picture is decoration, the buttons are the screen's
+    // purpose, and the poster is what gives way for them.
+    readonly property real maxPosterH: root.sh * 0.35 //168
+
+    // Bottom edge of whichever action button holds the focus, measured inside
+    // the column. 0 when the focus is elsewhere, which parks the column at rest.
+    readonly property real focusedActionBottom: {
+        var b = focusRow === 0 ? playButton
+              : focusRow === 1 ? extrasButton
+              : focusRow === 4 ? writeCardButton : null
+        return b ? b.y + b.height : 0
+    }
+
     // Season art beside each row title. The taller rows spend the same extra
     // box height the poster unlocked, so the two appear together and the list
     // can never outgrow the content box. Slot width is reserved for every row
@@ -263,6 +278,7 @@ FocusScope {
         anchors.topMargin: showRoot.showPoster ? root.sh * 0.2166667 //104
                                          : root.sh * 0.25      //120
         anchors.leftMargin: root.sw * 0.115625 //74
+        id: body
         width: root.sw * 0.76875 //492
         height: showRoot.showPoster ? root.sh * 0.6104167 //293
                               : root.sh * 0.525     //252
@@ -275,7 +291,15 @@ FocusScope {
             spacing: root.sw * 0.0375 //24
 
             Column {
+                id: actionColumn
                 width: root.sw * 0.1875 //120
+
+                // Scrolled so the focused button is always in view. Nothing moves
+                // while the stack fits — which is what the sizes above are for —
+                // and past that the poster is what slides away first, the buttons
+                // below it being the reason to be here at all.
+                y: -Math.max(0, showRoot.focusedActionBottom - body.height)
+                Behavior on y { NumberAnimation { duration: 120; easing.type: Easing.OutQuad } }
 
                 // Poster, above the action buttons. The wrapper carries the 8px
                 // gap and collapses to nothing when hidden — a Column skips
@@ -284,7 +308,7 @@ FocusScope {
                 Item {
                     visible: showRoot.showPoster
                     width: parent.width
-                    height: posterImage.height + root.sh * 0.0166667 //8 gap
+                    height: posterImage.height + root.sh * 0.0125 //6 gap
 
                     Image {
                         id: posterImage
@@ -293,12 +317,17 @@ FocusScope {
                         cache: true
                         // Fitted, not cropped, and sized from what came back —
                         // a 2:3 poster stands tall, a 16:9 episode still is wide.
-                        // Clamped to the button column either way, so a wide
-                        // still can never spill into the summary beside it.
+                        // Clamped to the button column's width, so a wide still
+                        // can never spill into the summary beside it, and to
+                        // maxPosterH, so a tall one can't push the buttons under
+                        // it off the bottom of the clip. Whichever binds first.
                         fillMode: Image.PreserveAspectFit
                         sourceSize.width: root.sw * 0.1875 //120
                         sourceSize.height: root.sh * 0.25  //120
-                        width: Math.min(implicitWidth, parent.width)
+                        width: Math.min(implicitWidth, parent.width,
+                                        implicitHeight > 0
+                                            ? showRoot.maxPosterH * implicitWidth / implicitHeight
+                                            : parent.width)
                         height: implicitWidth > 0
                                 ? width * implicitHeight / implicitWidth : 0
                         anchors.top: parent.top
@@ -312,7 +341,7 @@ FocusScope {
                     color: focusRow === 0 ? root.accentColor : root.surfaceColor
                     border.color: focusRow === 0 ? root.accentColor : root.tertiaryColor
                     width: root.sw * 0.1875 //120
-                    height: root.sh * 0.1166667 //56
+                    height: root.sh * 0.0875 //42
                     border.width: root.sh * 0.003125 //2
 
                     Text {
