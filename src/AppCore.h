@@ -90,6 +90,10 @@ private:
     // Extra top-level menu rows a module's backend wants to contribute. Probed,
     // not connected — see the comment at the call site in scan_for_modules.
     QVariantList menuEntriesForModule(const QString &moduleId) const;
+    // Whether a module's backend asks to be left off the main menu — probed the
+    // same way. A module that has become reachable by other means says so itself
+    // rather than this level knowing which module that is.
+    bool menuHiddenForModule(const QString &moduleId) const;
     // Resolve a module's enabled state: config override if present, else the
     // manifest default (an "enabled" setting whose default is "OFF"), else true.
     bool isModuleEnabled(const ModuleEntry &m, const QJsonObject &modulesConfig) const;

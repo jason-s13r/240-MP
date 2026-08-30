@@ -196,6 +196,15 @@ FocusScope {
         function onVideoMetaLoaded() { videoRoot.metaRev++ }
     }
 
+    // Bottom edge of whichever action button holds the focus, measured inside
+    // the column. 0 when the focus is elsewhere, which parks the column at rest.
+    readonly property real focusedActionBottom: {
+        var b = focusRow === 0 ? playButton
+              : focusRow === 1 ? watchLaterButton
+              : focusRow === 2 ? channelButton : null
+        return b ? b.y + b.height : 0
+    }
+
     // ---
     // UI
     // ---
@@ -228,6 +237,13 @@ FocusScope {
                 id: buttonColumn
                 width: root.sw * 0.1875 //120
                 spacing: root.sh * 0.0125 //6
+
+                // Scrolled so the focused button is always in view. Nothing moves
+                // while the stack fits — it does today — and past that the
+                // thumbnail is what slides away first, the buttons below it being
+                // the reason to be here at all. Same rule as the Plex details.
+                y: -Math.max(0, videoRoot.focusedActionBottom - body.height)
+                Behavior on y { NumberAnimation { duration: 120; easing.type: Easing.OutQuad } }
 
                 // Thumbnail, above the buttons. The wrapper carries the gap and
                 // collapses to nothing when there is no picture — a Column skips
@@ -286,6 +302,7 @@ FocusScope {
 
                 // PLAY / RESUME
                 Rectangle {
+                    id: playButton
                     width: parent.width
                     height: root.sh * 0.1 //48
                     color: videoRoot.focusRow === 0 ? root.accentColor : root.surfaceColor
@@ -303,6 +320,7 @@ FocusScope {
 
                 // Watch later, worded by what pressing it would do.
                 Rectangle {
+                    id: watchLaterButton
                     width: parent.width
                     height: wlLabel.implicitHeight + root.sh * 0.025 //12
                     color: videoRoot.focusRow === 1 ? root.accentColor
@@ -326,6 +344,7 @@ FocusScope {
                 // feed row always, and off a Watch Later or History row once the
                 // detail fetch has said which channel that video is from.
                 Rectangle {
+                    id: channelButton
                     visible: videoRoot.canOpenChannel
                     width: parent.width
                     height: channelLabel.implicitHeight + root.sh * 0.025 //12

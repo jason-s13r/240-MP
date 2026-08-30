@@ -117,9 +117,11 @@ FocusScope {
 
     // Dwell on the matched-cassette state (PLAYING ► + title) briefly before
     // handing off to the player, so a tap gets on-screen confirmation of what
-    // matched instead of a hard cut to the loading screen. Extra taps during
-    // the dwell are already ignored by the backend (m_playbackActive), and
-    // backing out mid-dwell is safe: leaving the module disarms the backend.
+    // matched instead of a hard cut to the loading screen. (The shell runs the
+    // same dwell against its corner light for taps made from anywhere else.)
+    // Extra taps during the dwell are already ignored by the backend
+    // (m_playbackActive), and backing out mid-dwell is safe: this timer dies
+    // with the view, and leaving the module drops the backend's claim.
     Timer {
         id: matchedDwell
         interval: 1200

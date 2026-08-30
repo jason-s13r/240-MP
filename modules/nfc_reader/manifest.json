@@ -11,6 +11,13 @@
       "default": "OFF"
     },
     {
+      "key": "tap_anywhere",
+      "label": "Tap From Any Screen",
+      "type": "toggle",
+      "default": "OFF",
+      "description": "Read cards from anywhere in the app rather than only from this screen, and show a reader indicator beside the clock.\nThe NFC Reader entry is dropped from the main menu, since there is then no reason to open it."
+    },
+    {
       "key": "tags_directory",
       "label": "Tags Directory",
       "type": "directory_browser",
