@@ -18,6 +18,10 @@ FocusScope {
     property string partId:       navParams.partId       || ""
     property string sessionId:    navParams.sessionId    || ""
     property int    viewOffset:   navParams.viewOffset   || 0
+    // Set by a caller that has already put the resume question to the user, so
+    // this view doesn't put it again — CardPlay.qml asks it as part of asking
+    // which profile is watching, and viewOffset arrives already decided.
+    property bool   resumeAsked: navParams.resumeAsked === true
     property string itemTitle:    navParams.title        || ""
     // Enough of an episode's place in its show to name it on mpv's OSD. Plain
     // properties rather than reads off navParams, because autoplay swaps the
@@ -458,7 +462,7 @@ FocusScope {
         var autoplayRaw = appCore.get_setting(moduleRoot.moduleId, "autoplay_next_episode")
         autoplayNext  = allowAutoplay && (autoplayRaw === true || autoplayRaw === "ON")
 
-        if (resumeSetting === "ask" && viewOffset > 0) {
+        if (resumeSetting === "ask" && viewOffset > 0 && !resumeAsked) {
             overlayVisible = true
         } else {
             beginPlayback(viewOffset)

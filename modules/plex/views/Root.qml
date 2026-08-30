@@ -209,11 +209,12 @@ FocusScope {
         var state = plexBackend.get_auth_state()
 
         // NFC card deep-link. Deliberately ahead of — and exclusive of — the
-        // auth/user gate below: a card must play as whoever is already the active
-        // user, never prompt a profile switch. (Falling through to the gate would
-        // land a card tap on UserSelect whenever auto_sign_in is off, and switching
-        // profiles from a card would sidestep the profile PIN.) A pending PIN or a
-        // missing sign-in is surfaced by CardPlay as an error, not a prompt.
+        // auth/user gate below: a card arrives already signed in as somebody, and
+        // falling through the gate would land a tap on UserSelect whenever
+        // auto_sign_in is off. CardPlay offers a profile switch of its own, so
+        // nothing is lost by skipping this one — and its switch goes through the
+        // same PIN gate every other switch does. A pending PIN or a missing
+        // sign-in is surfaced by CardPlay as an error, not a prompt.
         if (navParams.cardRef) {
             navigateTo("CardPlay.qml", {
                 cardRef:   navParams.cardRef,

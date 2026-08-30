@@ -18,6 +18,12 @@ public:
     // Sync — no HTTP
     Q_INVOKABLE QString  get_auth_state();
     Q_INVOKABLE QString  get_active_user_name();
+    Q_INVOKABLE QString  get_active_user_id() const;
+    // The Home profiles from the cache, as homeUserEntry writes them
+    // ({id, uuid, title, managed, protected, admin}). Sync, unlike
+    // load_users_from_cache's signal: a card's profile chooser needs them to
+    // build its rows, not to react to them arriving.
+    Q_INVOKABLE QVariantList get_home_users() const;
     Q_INVOKABLE QString  get_active_server_name();
     Q_INVOKABLE QVariantList get_switchable_servers();
     Q_INVOKABLE void     build_stream_url(const QString &ratingKey,

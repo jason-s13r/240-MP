@@ -1000,6 +1000,17 @@ QString PlexBackend::get_active_user_name() {
     return {};
 }
 
+QString PlexBackend::get_active_user_id() const {
+    return loadAuth()["active_user_id"].toString();
+}
+
+QVariantList PlexBackend::get_home_users() const {
+    QVariantList out;
+    for (const auto &v : loadAuth()["users"].toArray())
+        out.append(v.toObject().toVariantMap());
+    return out;
+}
+
 QString PlexBackend::get_active_server_name() {
     QJsonObject auth = loadAuth();
     QString mid = auth["active_server_machine_id"].toString();

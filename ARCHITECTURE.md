@@ -357,12 +357,19 @@ A card the NFC module plays itself takes the same shape when the shell routes it
 
 **The receiving module carries a `CardPlay.qml`.** `modules/plex/views/CardPlay.qml` is the reference. It is a thin resolver, not a view the user navigates to:
 
-- `Root.qml` routes to it on `navParams.cardRef`, **ahead of and exclusive of the auth/user gate**. For Plex, falling through that would land a card tap on `UserSelect.qml` whenever `auto_sign_in` is off, and switching profiles from a card would sidestep the profile PIN. A missing sign-in or a pending PIN is surfaced as an error, never a prompt.
+- `Root.qml` routes to it on `navParams.cardRef`, **ahead of and exclusive of the auth/user gate**. A card arrives already signed in as somebody; falling through that gate would land a tap on `UserSelect.qml` whenever `auto_sign_in` is off. A missing sign-in or a PIN parked by some *other* path is surfaced as an error, never a prompt — a card does not sign anybody in.
 - So it resolves the ref, builds the stream, then **`replaceWith("Player.qml", …)`** — `replaceWith` doesn't push to the nav stack, so the stack stays one deep and backing out of playback returns straight to the screen the card was tapped from (the NFC tap screen, or whatever else was up), instead of stranding the user inside a module. Tapping another card after playback stops is then immediate, wherever they were.
+- **It asks who is watching.** One card on a shelf serves a whole Home, and a resume position belongs to a profile, not to the card — so on a Home of more than one profile the card offers `RESUME <time>` (only when this profile actually has a position), `PLAY FROM THE BEGINNING`, and `CHANGE PROFILE`. Picking a profile switches through `reauth_select_user` and then **re-resolves the card**, because which episode is on deck and where it is up to are both that profile's own answers; the same view then re-renders with their rows — unless that profile has no position in it, in which case there is only one thing left it could be asked and it just plays. A Home of one is never asked and plays on tap exactly as it always has.
+
+  Having asked, it says so: `Player.qml` takes a `resumeAsked` navParam and skips its own `RESUME PLAYBACK?` overlay, which is otherwise what the `resume_playback` setting puts up whenever a `viewOffset` arrives. Without it a card tap asks the same question twice in a row. Every other route into the Player is unaffected — nobody else has asked, so nobody else sets it.
+
+  The switch is a real one and it sticks: carry on browsing afterwards and you are that profile, which is the point — nobody has to go back and change it first. It goes through the **same PIN gate as every other switch**: plex.tv refuses a protected profile, `userPinRequired` comes back, and the card draws the same 4-digit spinner `ProfilePin.qml` does (a spinner, not a text field — the app is driven by a remote and a gamepad). Backing out of it calls `cancel_pending_pin`, or the Plex module would prompt for that profile on its own next entry.
+
+  Reading *everyone's* position up front was the other shape this could have taken, and it is not possible cheaply: Plex has no admin-level view of who is where, a position is per-token, and this module only ever holds the active profile's server tokens — so each profile would have to be switched into just to be asked. Making the switch the choice gets the same answer for free.
 - It doesn't write player state back to the service (Plex's `set_audio_stream` / `set_subtitle_stream`) — a card tap must not mutate stored per-item preferences. Whatever the server already prefers is what plays.
 - Errors render in the NFC module's visual language, so a card tap looks the same whichever module ends up serving it.
 
-**Adding another module** (e.g. Jellyfin, Emby, …) means: a row in `kHandoffModules`, a `CardPlay.qml`, and a `cardRef` branch in that module's `Root.qml`. Nothing in the NFC module is service-specific.
+**Adding another module** (e.g. Jellyfin, Emby, …) means: a row in `kHandoffModules`, a `CardPlay.qml`, and a `cardRef` branch in that module's `Root.qml`. Nothing in the NFC module is service-specific — including the profile chooser, which is Plex's own because Plex Home is.
 
 ### Plex specifics
 
