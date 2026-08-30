@@ -57,6 +57,37 @@ FocusScope {
 
     focus: true
 
+    // Nobody has to answer this prompt: it counts down and then takes the row it
+    // is already sitting on — RESUME, the reason the prompt exists. Any key press
+    // is somebody who does want to choose, and stops the count for good.
+    readonly property int autoPlaySeconds: 5
+    property bool autoPlayArmed: false
+    property int  autoPlayLeft:  autoPlaySeconds
+
+    function armAutoPlay() {
+        autoPlayLeft  = autoPlaySeconds
+        autoPlayArmed = true
+    }
+
+    Timer {
+        interval: 1000
+        repeat:   true
+        running:  playerRoot.autoPlayArmed && playerRoot.overlayVisible
+        onTriggered: {
+            playerRoot.autoPlayLeft--
+            if (playerRoot.autoPlayLeft > 0) return
+            playerRoot.autoPlayArmed = false
+            playerRoot.acceptChoice()
+        }
+    }
+
+    // The one place the resume prompt is answered, by ENTER or by the countdown
+    // running out.
+    function acceptChoice() {
+        overlayVisible = false
+        play(choiceIndex === 0 ? savedPositionMs : 0)
+    }
+
     function doPlay(startMs) {
         overlayVisible = false
         lastStartMs = startMs
@@ -86,6 +117,10 @@ FocusScope {
     }
 
     Keys.onPressed: function(event) {
+        // Somebody is here and pressing keys, so the unattended countdown has
+        // no business finishing — including on a key nothing below acts on.
+        autoPlayArmed = false
+
         if (errorMessage !== "") {
             if (event.key === Qt.Key_Escape || event.key === Qt.Key_Backspace || event.key === Qt.Key_Back) {
                 goBack()
@@ -106,8 +141,7 @@ FocusScope {
                 choiceIndex = 1
                 event.accepted = true
             } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                overlayVisible = false
-                play(choiceIndex === 0 ? savedPositionMs : 0)
+                acceptChoice()
                 event.accepted = true
             }
         } else {
@@ -188,6 +222,7 @@ FocusScope {
         } else if (savedPos > 0) {
             savedPositionMs = savedPos
             overlayVisible = true
+            armAutoPlay()
         } else {
             play(0)
         }
@@ -244,7 +279,7 @@ FocusScope {
             color: root.surfaceColor
             anchors.centerIn: parent
             width: root.sw * 0.76875
-            height: root.sh * 0.2833333
+            height: root.sh * 0.3666666
 
             Column {
                 id: dialogColumn
@@ -291,6 +326,18 @@ FocusScope {
                             }
                         }
                     }
+                }
+
+                Text {
+                    // Keeps its line whether or not it has anything to say, so the
+                    // rows above do not jump when the count stops.
+                    text: playerRoot.autoPlayArmed
+                          ? "PLAYING IN " + playerRoot.autoPlayLeft + "..."
+                          : " "
+                    color: root.accentColor
+                    font.family: root.globalFont
+                    font.pixelSize: root.sh * 0.0333333
+                    anchors.horizontalCenter: parent.horizontalCenter
                 }
 
                 Text {
