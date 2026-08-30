@@ -75,6 +75,29 @@ FocusScope {
     property int choiceIndex: 0
     property int profileIndex: 0
 
+    // A card tap is meant to be one gesture: tap it, the show starts. The chooser
+    // is only there for the times you want something other than that, so it counts
+    // itself out and then takes its own first row — RESUME when the profile has a
+    // position, otherwise PLAY. Any key press is somebody who does want to choose,
+    // and stops the count for the rest of the visit.
+    readonly property int autoPlaySeconds: 5
+    property bool autoPlayArmed: false
+    property int  autoPlayLeft:  autoPlaySeconds
+
+    Timer {
+        interval: 1000
+        repeat: true
+        running: cardRoot.autoPlayArmed && cardRoot.phase === "choosing"
+        onTriggered: {
+            cardRoot.autoPlayLeft--
+            if (cardRoot.autoPlayLeft > 0) return
+            cardRoot.autoPlayArmed = false
+            // choiceIndex cannot have moved while the count was still armed, so
+            // this is the first row, which is the one the card already implies.
+            cardRoot.chooseCurrent()
+        }
+    }
+
     // --- PIN entry, for a profile plex.tv refuses to switch into without one ---
     readonly property int slotCount: 4
     property var    digits: [0, 0, 0, 0]
@@ -209,6 +232,10 @@ FocusScope {
     }
 
     Keys.onPressed: function(event) {
+        // Someone is here and pressing keys, so an unattended countdown has no
+        // business finishing — including on a key this view does nothing with.
+        autoPlayArmed = false
+
         var back = (event.key === Qt.Key_Escape || event.key === Qt.Key_Backspace
                     || event.key === Qt.Key_Back)
         var enter = (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
@@ -293,6 +320,8 @@ FocusScope {
             }
             cardRoot.choiceIndex = 0
             cardRoot.askedResume = true
+            cardRoot.autoPlayLeft = cardRoot.autoPlaySeconds
+            cardRoot.autoPlayArmed = true
             cardRoot.phase = "choosing"
         }
 
@@ -541,6 +570,17 @@ FocusScope {
             }
 
             Item { width: 1; height: root.sh * 0.0166667 }
+
+            Text {
+                // Keeps its line whether or not it has anything to say.
+                text: cardRoot.autoPlayArmed
+                      ? "PLAYING IN " + cardRoot.autoPlayLeft + "..."
+                      : " "
+                color: root.accentColor
+                font.family: root.globalFont
+                anchors.horizontalCenter: parent.horizontalCenter
+                font.pixelSize: root.sh * 0.0333333
+            }
 
             Text {
                 text: root.hints.back + ":BACK " + root.hints.navigate + ":NAVIGATE "
