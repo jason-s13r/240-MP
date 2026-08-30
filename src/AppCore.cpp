@@ -102,6 +102,14 @@ void AppCore::scan_for_modules() {
             qDebug("[AppCore] Module disabled: %s", qPrintable(m.name));
             continue;
         }
+        // A module can also ask to be left off the menu while staying enabled —
+        // the NFC reader does once its cards are read from every screen, since
+        // its own screen then has nothing left to offer. Its settings are
+        // unaffected: those come from get_installed_modules, not from here.
+        if (menuHiddenForModule(m.id)) {
+            qDebug("[AppCore] Module hidden from menu: %s", qPrintable(m.name));
+            continue;
+        }
         // entry_point is a path relative to APP_ROOT
         QString entryPoint = QStringLiteral("modules/%1/%2").arg(m.folder, m.entryQml);
         QVariantMap entry;
@@ -141,6 +149,23 @@ void AppCore::scan_for_modules() {
     }
 
     emit modulesLoaded(displayData);
+}
+
+// Contributed rows are a module's other offerings, not the module itself, so a
+// module hidden from the menu can still add them; only its own row is dropped.
+bool AppCore::menuHiddenForModule(const QString &moduleId) const {
+    auto it = m_backends.find(moduleId);
+    if (it == m_backends.end()) return false;
+    if (it.value()->metaObject()->indexOfMethod(
+            QMetaObject::normalizedSignature("hide_from_menu()")) < 0) {
+        return false;
+    }
+    bool hidden = false;
+    if (!QMetaObject::invokeMethod(it.value(), "hide_from_menu",
+                                   Qt::DirectConnection, Q_RETURN_ARG(bool, hidden))) {
+        return false;
+    }
+    return hidden;
 }
 
 QVariantList AppCore::menuEntriesForModule(const QString &moduleId) const {

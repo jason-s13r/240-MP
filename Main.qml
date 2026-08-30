@@ -104,6 +104,10 @@ Window {
     // (scripts/mpv-osc.lua), so the reading does not move when mpv takes the
     // screen; a module may hang a status line of its own to the left of it.
     readonly property real cornerGap: root.sw * 0.025 //16
+    // Tighter than the gutter above, and deliberately: what the shell hangs
+    // beside the clock reads as part of it, not as the next thing along. The
+    // full gutter still separates the pair from a module's status line.
+    readonly property real badgeGap: root.cornerGap * 0.5 //8
     readonly property real cornerMargin: root.sw * 0.12 //76.8
     readonly property real cornerCenterY: root.sh * 0.1260417 //60.5
 
@@ -112,14 +116,22 @@ Window {
     // into it.
     property real statusReserve: 0
 
-    // Where that line hangs: clear of the clock. A module anchors to parent.right
-    // with this margin.
-    readonly property real statusMargin: root.cornerMargin + appClock.width + root.cornerGap
+    // What the shell itself hangs beside the clock: the NFC indicator, when there
+    // is a reader listening. Between the clock and a module's status line, so the
+    // shell's own corner reads as one block whichever module is up.
+    readonly property real cornerBadges:
+        nfcIndicator.visible ? nfcIndicator.width + root.badgeGap : 0
+
+    // Where that line hangs: clear of the clock and of anything the shell has put
+    // beside it. A module anchors to parent.right with this margin.
+    readonly property real statusMargin:
+        root.cornerMargin + appClock.width + root.cornerGap + root.cornerBadges
 
     // How much of the top row the corner takes, all told. A header sizes itself
     // to what is left rather than running into it, and it moves with the reading
     // — "11:59 PM" is wider than "23:59" — and with whatever is beside it.
     readonly property real cornerReserve: appClock.width
+                                        + root.cornerBadges
                                         + (root.statusReserve > 0
                                            ? root.statusReserve + root.cornerGap : 0)
                                         + root.cornerGap
@@ -219,6 +231,11 @@ Window {
             idleTracker.enabled = true
         }
 
+        // nfcTapsArmed only reports its *changes* to the reader; this is where it
+        // states where the app starts out — listening, on the menu, with nothing
+        // else on the screen.
+        nfcReaderBackend.setTapsArmed(root.nfcTapsArmed)
+
         // Break declarative bindings on macOS so the C++ NSWindow override
         // in forceWindowFullScreenOnScreen() isn't immediately re-fought by QML.
         if (Qt.platform.os === "osx") {
@@ -277,6 +294,47 @@ Window {
     property var appNavStack: []
     property var appCurrentParams: ({})
     property bool _startupNavigated: false
+
+    // --- NFC CARD TAPS ---
+    // A card plays from wherever the app happens to be, not only from the NFC
+    // module's own screen: walking to that screen to tap is exactly the errand a
+    // card exists to save. Behind that module's own "Tap From Any Screen" setting,
+    // which also drops it from the main menu — with this on there is nothing left
+    // to open it for. The module still routes the taps it is up for (it has a
+    // cassette to animate and an internal player to reach without reloading
+    // itself); everywhere else the shell routes them, below.
+    //
+    // Armed on every screen the app itself draws. Not while something else has
+    // the display (mpv, a takeover script): a tap must never pull the UI out from
+    // under a video. And not while a card already accepted is still on its way to
+    // a player, so a second tap can't overtake the first.
+    readonly property bool nfcTapsArmed: nfcReaderBackend
+                                         && nfcReaderBackend.enabled
+                                         && nfcReaderBackend.tapAnywhere
+                                         && !root.displayOwned
+                                         && !root.cardNavActive
+    onNfcTapsArmedChanged: nfcReaderBackend.setTapsArmed(root.nfcTapsArmed)
+
+    // Raised from the moment a tapped card is routed somewhere until the app
+    // comes back to the screen it was tapped from, and lowered there rather than
+    // on playback because that is the one event every trip has: a resolve screen
+    // that errors out and is backed away from never reaches a player at all. It
+    // is also where the reader is told the card is done with, for the same reason
+    // — the NFC module's own player says so itself, a receiving module can't be
+    // asked to.
+    property bool cardNavActive: false
+    property int _cardNavDepth: 0
+
+    function beginCardNav() {
+        root._cardNavDepth = root.appNavStack.length
+        root.cardNavActive = true
+    }
+
+    function endCardNav() {
+        if (!root.cardNavActive) return
+        root.cardNavActive = false
+        if (nfcReaderBackend) nfcReaderBackend.resetAfterPlayback()
+    }
 
     // --- MPV PLAYBACK TRACKING ---
     // Block the screen saver while mpv is playing so it never flashes during or
@@ -344,6 +402,9 @@ Window {
             ignoreUnknownSignals: true
 
             function onNavigateTo(path, params, listState) {
+                // A hand-off the NFC module routed itself, from its own screen.
+                // The trip out and back is the shell's to hold open either way.
+                if (params && params.cardRef) root.beginCardNav()
                 root.appNavStack.push({ source: moduleLoader.source, params: root.appCurrentParams, listState: listState || {} })
                 root.appCurrentParams = params || {}
                 moduleLoader.setSource(path, { "navParams": params || {} })
@@ -354,8 +415,61 @@ Window {
                 var prev = root.appNavStack.pop()
                 root.appCurrentParams = prev.params
                 moduleLoader.setSource(prev.source, { "navParams": prev.params, "navListState": prev.listState || {} })
+                // Back at (or above) where a card was tapped: its trip is over.
+                if (root.appNavStack.length <= root._cardNavDepth) root.endCardNav()
             }
 
+        }
+    }
+
+    // A tap the NFC module is not on screen to route itself. The dwell before the
+    // app moves is the tap's receipt: the corner light is already beating in the
+    // card's colour, and a hard cut straight to a loading screen would throw that
+    // away. Extra taps during it are ignored by the backend, which holds the
+    // claim from the moment it matched the card.
+    Timer {
+        id: cardTapDwell
+        interval: 1200
+        repeat: false
+        // Where the card is going, and what it tells that module on arrival —
+        // the module's entry point and its navParams, nothing this level reads.
+        property string moduleEntry: ""
+        property var params: ({})
+        onTriggered: {
+            if (moduleEntry === "") return
+            root.beginCardNav()
+            root.appNavStack.push({ source: moduleLoader.source,
+                                    params: root.appCurrentParams,
+                                    listState: {} })
+            root.appCurrentParams = cardTapDwell.params
+            moduleLoader.setSource(cardTapDwell.moduleEntry, { "navParams": cardTapDwell.params })
+        }
+    }
+
+    Connections {
+        target: nfcReaderBackend
+
+        // A card mapped to a file or a stream: the NFC module's own player owns
+        // that, so the card is routed into that module the same way any other
+        // card is routed into the module that owns it.
+        function onPlaybackRequested(videoPath) {
+            if (nfcReaderBackend.moduleActive) return
+            cardTapDwell.moduleEntry = nfcReaderBackend.entryPoint()
+            cardTapDwell.params = { cardVideoPath: videoPath,
+                                    cardTitle: nfcReaderBackend.videoTitle }
+            cardTapDwell.restart()
+        }
+
+        // A card pointing at another module's content (e.g. a Plex guid). That
+        // module owns resolution, auth and playback; it is handed the ref and
+        // told nothing else.
+        function onCardHandoffRequested(moduleId, ref, mode) {
+            if (nfcReaderBackend.moduleActive) return
+            cardTapDwell.moduleEntry = appCore.module_entry_point(moduleId)
+            cardTapDwell.params = { cardRef: ref,
+                                    cardMode: mode,
+                                    cardTitle: nfcReaderBackend.videoTitle }
+            cardTapDwell.restart()
         }
     }
 
@@ -372,6 +486,36 @@ Window {
         anchors.right: parent.right
         anchors.rightMargin: root.cornerMargin
         y: root.cornerCenterY - height / 2
+    }
+
+    // --- NFC READER LIGHT ---
+    // Beside the clock, because the corner is where the eye already goes and a
+    // reader that listens everywhere has to say so somewhere. Only where a tap
+    // would do something: the module enabled and set to read from any screen,
+    // and the app — not mpv — on it.
+    NfcIndicator {
+        id: nfcIndicator
+        visible: nfcReaderBackend && nfcReaderBackend.enabled
+                 && nfcReaderBackend.tapAnywhere
+                 && nfcReaderBackend.available && !root.displayOwned
+        anchors.right: parent.right
+        anchors.rightMargin: root.cornerMargin + appClock.width + root.badgeGap
+        y: root.cornerCenterY - height / 2
+        // Exactly as tall as the digits it sits beside. Not the clock's font size:
+        // that is the em box, and a digit's ink fills only about three quarters
+        // of it, where the waves fill their whole viewBox — matching the sizes
+        // would leave the icon visibly the larger of the two.
+        height: clockInk.tightBoundingRect.height
+    }
+
+    // The ink height of a digit in the clock's own font, measured rather than
+    // assumed so it follows the font and the clock's size. "0" rather than the
+    // reading itself: every glyph the clock can show sits between the same
+    // baseline and cap, and a fixed sample doesn't re-measure on the minute.
+    TextMetrics {
+        id: clockInk
+        font: appClock.font
+        text: "0"
     }
 
     // --- SCREEN SAVER (Idle Tracker integration) ---

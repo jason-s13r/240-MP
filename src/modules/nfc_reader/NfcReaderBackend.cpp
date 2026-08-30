@@ -29,6 +29,9 @@ static constexpr int kMaxRespawns = 5;
 // be reopened twice a second.
 static constexpr qint64 kDetectIntervalMs = 2000;
 static const char *kTagsDirName = "nfc_tags";
+// This module's manifest id. Needed here to read its own config section, to
+// filter setting changes, and to hand the shell this module's entry point.
+static const QString kModuleId = QStringLiteral("com.240mp.nfc_reader");
 
 // Card refs that carry a URI scheme belonging to another module are handed off to
 // it rather than played here. Adding a module means adding a row: the rest of the
@@ -69,9 +72,18 @@ static QString handoffModuleForRef(const QString &ref) {
         return QStringLiteral("com.240mp.plex");
     return kHandoffModules.value(scheme);
 }
-// Must track the "enabled" toggle's default in modules/nfc_reader/manifest.json,
-// which is what AppCore falls back to when config.json has no value yet.
+// Must track the toggles' defaults in modules/nfc_reader/manifest.json, which is
+// what AppCore falls back to when config.json has no value yet.
 static constexpr bool kManifestEnabledDefault = false;
+static constexpr bool kManifestTapAnywhereDefault = false;
+
+// Reads a toggle the way ModuleSettings.qml writes and reads one: a bool, or the
+// "ON"/"OFF" string form a manifest default or a hand-edited config may carry.
+static bool toggleValue(const QVariant &v, bool fallback) {
+    if (!v.isValid() || v.isNull()) return fallback;
+    if (v.metaType().id() == QMetaType::Bool) return v.toBool();
+    return v.toString().compare(QLatin1String("ON"), Qt::CaseInsensitive) == 0;
+}
 
 // ---------------------------------------------------------------------------
 // NfcPollWorker — lives on its own QThread; owns the drivers and all device I/O.
@@ -164,13 +176,16 @@ NfcReaderBackend::NfcReaderBackend(const QString &appRoot, const QString &dataRo
     QFile f(m_dataRoot + "/config.json");
     if (f.open(QIODevice::ReadOnly)) {
         const QJsonObject moduleConfig = QJsonDocument::fromJson(f.readAll()).object()
-            ["modules"].toObject()["com.240mp.nfc_reader"].toObject();
+            ["modules"].toObject()[kModuleId].toObject();
         const QString dir = moduleConfig["tags_directory"].toString();
         if (!dir.isEmpty())
             m_tagsDir = dir;
 
         if (moduleConfig.contains("enabled"))
             configuredEnabled = moduleConfig["enabled"].toBool(true);
+
+        m_tapAnywhere = toggleValue(moduleConfig["tap_anywhere"].toVariant(),
+                                    kManifestTapAnywhereDefault);
     }
     qDebug("[NfcReader] Tags dir: %s", qPrintable(tagsDirPath()));
 
@@ -236,6 +251,7 @@ void NfcReaderBackend::setPollingEnabled(bool enabled) {
         startPolling();
     else
         stopPolling();
+    emit enabledChanged();
 }
 
 void NfcReaderBackend::startPolling() {
@@ -330,13 +346,21 @@ void NfcReaderBackend::setTagsDir(const QString &path) {
 }
 
 void NfcReaderBackend::onSettingChanged(const QString &moduleId, const QString &key, const QVariant &value) {
-    if (moduleId != QLatin1String("com.240mp.nfc_reader")) return;
+    if (moduleId != kModuleId) return;
 
     if (key == QLatin1String("enabled")) {
         // Same rule as the constructor / AppCore::isModuleEnabled: only an
         // explicit false turns polling off.
         const bool enabled = value.metaType().id() != QMetaType::Bool || value.toBool();
         setPollingEnabled(enabled);
+    } else if (key == QLatin1String("tap_anywhere")) {
+        const bool on = toggleValue(value, kManifestTapAnywhereDefault);
+        if (on != m_tapAnywhere) {
+            m_tapAnywhere = on;
+            qInfo("[NfcReader] Taps read from %s",
+                  on ? "every screen" : "this module's screen only");
+            emit tapAnywhereChanged();
+        }
     } else if (key == QLatin1String("tags_directory")) {
         setTagsDir(value.toString());
     }
@@ -437,16 +461,32 @@ void NfcReaderBackend::reloadMapping() {
     scanTagsDir();
 }
 
+void NfcReaderBackend::setTapsArmed(bool armed) {
+    if (m_tapsArmed == armed) return;
+    m_tapsArmed = armed;
+    qDebug("[NfcReader] Taps %s", armed ? "armed" : "disarmed - the display is busy");
+    emit tapsArmedChanged();
+}
+
 void NfcReaderBackend::setModuleActive(bool active) {
     if (m_moduleActive == active) return;
     m_moduleActive = active;
-    qDebug("[NfcReader] Module %s", active ? "active - card taps armed" : "inactive - card taps ignored");
+    qDebug("[NfcReader] Module %s", active ? "active - it routes its own taps"
+                                          : "inactive - the shell routes taps");
     if (!active) {
         // Leaving the module drops any transient card state so the next visit
-        // starts from a clean "tap a card" screen.
+        // starts from a clean "tap a card" screen. A card the module handed off
+        // to another module is still in flight, but the shell has already
+        // disarmed taps for the trip (cardNavActive in Main.qml), so nothing
+        // rides on the claim being kept here.
         m_playbackActive = false;
         setCardState("none");
     }
+    emit moduleActiveChanged();
+}
+
+QString NfcReaderBackend::entryPoint() const {
+    return m_appCore ? m_appCore->module_entry_point(kModuleId) : QString();
 }
 
 void NfcReaderBackend::setCardCapture(bool armed) {
@@ -727,11 +767,12 @@ void NfcReaderBackend::onSampled(bool readerConnected, const QString &uid, const
         return;
     }
 
-    // Outside the module, card events must have no effect — but keep tracking
-    // the UID silently so a card already resting on the reader when the module
-    // opens is not treated as a fresh tap; it must be lifted and re-tapped,
-    // same as a card left on the reader after playback ends.
-    if (!m_moduleActive) {
+    // Disarmed, card events must have no effect — but keep tracking the UID
+    // silently so a card already resting on the reader when the app comes back
+    // is not treated as a fresh tap; it must be lifted and re-tapped, same as a
+    // card left on the reader after playback ends. The module's own screen is
+    // always listening, whatever the shell has said.
+    if (!m_tapsArmed && !m_moduleActive) {
         m_lastUid = uid;
         return;
     }

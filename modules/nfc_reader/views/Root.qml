@@ -118,13 +118,28 @@ FocusScope {
     }
 
     Component.onCompleted: {
-        if (nfcReaderBackend.available) {
-            nfcReaderBackend.setModuleActive(true)
-            nfcReaderBackend.reloadMapping()
-            navigateToView("Items.qml", {})
+        if (!nfcReaderBackend.available) return
+
+        nfcReaderBackend.setModuleActive(true)
+        nfcReaderBackend.reloadMapping()
+
+        // A card tapped from somewhere else in the app, routed here by the shell.
+        // The match has already happened, so this goes straight to the player —
+        // the same deep-link shape a card handed to any other module takes, and
+        // deliberately not by way of the tap screen, which has nothing left to
+        // ask. Backing out of the player leaves the module entirely, landing on
+        // whatever screen the card was tapped from.
+        if (navParams.cardVideoPath) {
+            navigateToView("Player.qml", { videoPath: navParams.cardVideoPath,
+                                           title:     navParams.cardTitle || "" })
+            return
         }
+
+        navigateToView("Items.qml", {})
     }
 
-    // Card taps must do nothing once the user leaves the module.
+    // Taps keep working once the user leaves the module — the shell routes them
+    // from there. This hands routing back to it, and drops whatever card state
+    // this visit left behind.
     Component.onDestruction: nfcReaderBackend.setModuleActive(false)
 }

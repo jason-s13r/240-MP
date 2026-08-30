@@ -172,14 +172,17 @@ The module ID lives in exactly one place per module — this call. Declare these
 
 #### Probed, not connected
 
-Two further capabilities are **probed on demand** rather than connected at registration — `AppCore` checks `metaObject()->indexOfMethod(...)` and calls the method with `QMetaObject::invokeMethod` only if the backend declares it. Same idea, but they return a value, so there's nothing to connect:
+Three further capabilities are **probed on demand** rather than connected at registration — `AppCore` checks `metaObject()->indexOfMethod(...)` and calls the method with `QMetaObject::invokeMethod` only if the backend declares it. Same idea, but they return a value, so there's nothing to connect:
 
 | Backend member (if declared) | Used by |
 |---|---|
 | `Q_INVOKABLE QString get_auth_state()` | `appCore.get_module_auth_state(moduleId)` — drives the `requires_auth` setting gate |
 | `Q_INVOKABLE QVariantList get_menu_entries()` | `scan_for_modules()` — lets a backend add its own rows to the **main menu** |
+| `Q_INVOKABLE bool hide_from_menu()` | `scan_for_modules()` — lets an enabled module ask to be left **off** the main menu |
 
 `get_menu_entries()` returns a list of `{name, params}`. `AppCore` fills in `entry_point` from the module's manifest and appends the rows to the `modulesLoaded` payload, so `views/ModuleList.qml` renders them like any other row and forwards `params` as `navParams` then the module's `Root.qml` router interprets them.
+
+`hide_from_menu()` is for a module that has become reachable another way and whose own row would then only be in the way — the NFC reader returns true once its cards are read from every screen. It drops only the module's *own* row: contributed rows are its other offerings, not the module itself, and settings come from `get_installed_modules()`, so a hidden module stays fully configurable. Which module that is stays the module's own business; `AppCore` only asks.
 
 Rows are appended **after** all module rows on purpose: module row indices then stay stable, so a saved menu position still restores onto the same row when a contributed row appears or disappears. The scripts module uses this to list `favorite = yes` scripts after native 240-MP modules.
 
@@ -329,16 +332,33 @@ The **scripts module** (`modules/scripts/`, `src/modules/scripts/`) is the secon
 
 An NFC card's tag file can point at content another module owns, rather than at a file this module can play itself. The NFC module resolves *which* module, and that module resolves *what to play* — auth, lookup and playback stay where they already live.
 
+**A tap is read from anywhere the app is on screen**, not only from the NFC module's own view — walking to that view to tap is the errand a card exists to save. That is the module's `tap_anywhere` setting (*Tap From Any Screen*, default off), and it turns on three things at once, because they are one idea: taps armed on every screen, the corner indicator that says so, and `hide_from_menu()` dropping the module's row — with taps read everywhere, its own screen has nothing left to offer. Off, everything below is inert and the module behaves exactly as it did: taps only while its view is up.
+
+Two flags decide what a tap does, and they are set from opposite ends:
+
+| Flag | Set by | Means |
+|---|---|---|
+| `setTapsArmed(bool)` | `Main.qml` | A tap may do something at all. Armed on every screen the shell draws, while `tap_anywhere` is on; lowered while `displayOwned` (mpv or a takeover script has the display) and while `cardNavActive` (a card already accepted is still on its way to a player) |
+| `setModuleActive(bool)` | `nfc_reader/views/Root.qml` | The NFC module's own view is up, so **it** routes the tap — it has a cassette to animate and an internal player to reach without reloading itself. Everywhere else `Main.qml` routes it |
+
+Card-write capture (`setCardCapture`, see `NfcCardWriter.qml`) is checked ahead of both, so arming a write always wins over playing the card.
+
+`Main.qml` runs the same 1.2 s dwell the module's own tap screen does, against the corner light (`NfcIndicator.qml`, beside the clock — see [Clock](#clock-viewscomponentsclockqml)). That light is the only acknowledgement a tap gets before the app moves, since a tap arrives with no keypress and no screen of its own.
+
+**Ending the trip.** `cardNavActive` is raised when a card is routed and lowered when the app nav stack pops back to the depth it was tapped from — not on playback, because a resolve screen that errors out and is backed away from never reaches a player at all. Lowering it is also where `resetAfterPlayback()` is called for a hand-off: the NFC module's own player says so itself (`Component.onDestruction`), but a receiving module can't be asked to.
+
 **The tag file.** Line 1 is the card UID, line 2 the ref, and an optional line 3 a bare mode token (`shuffle`). Line 3 is deliberately generic rather than Plex-specific so `.m3u` and YouTube-playlist cards can use the same slot later. `parseTagFile` stopped at two lines before, so a third line is backwards-compatible meaning existing cards are unaffected.
 
 **Routing.** `handoffModuleForRef()` in `NfcReaderBackend.cpp` maps a ref's URI scheme to a module id via `kHandoffModules`. `http`/`https` are deliberately absent as those are stream URLs this module hands straight to mpv. A recognised scheme emits `cardHandoffRequested(moduleId, ref, mode)` instead of `playbackRequested(videoPath)`; the file/stream path is untouched. If the target module is disabled the card is refused (`AppCore::is_module_enabled`).
 
-**Navigation.** `Items.qml` resolves the target's entry point with `AppCore::module_entry_point(moduleId)` and emits the **shell-level** `navigateTo` (not the router's internal one). That is why `nfc_reader/views/Root.qml` declares `signal navigateTo(...)` and calls its own router function `navigateToView()`: `Main.qml` only listens for a signal named exactly `navigateTo` on the loaded module, so the name has to be free.
+**Navigation.** Whoever routes the tap resolves the target's entry point with `AppCore::module_entry_point(moduleId)` and loads it with `{ cardRef, cardMode, cardTitle }`. From the module's own screen that is `Items.qml` emitting the **shell-level** `navigateTo` (not the router's internal one) — which is why `nfc_reader/views/Root.qml` declares `signal navigateTo(...)` and calls its own router function `navigateToView()`: `Main.qml` only listens for a signal named exactly `navigateTo` on the loaded module, so the name has to be free. From anywhere else `Main.qml` pushes and loads it directly.
+
+A card the NFC module plays itself takes the same shape when the shell routes it: `Main.qml` loads that module's entry point (`nfcReaderBackend.entryPoint()`, so the shell never names the module) with `cardVideoPath`, and `Root.qml` goes straight to its `Player.qml` rather than by way of the tap screen, which has nothing left to ask. The shell can't load `Player.qml` itself — like every view it reads `moduleRoot.moduleId` for its settings, so it only exists inside its own router.
 
 **The receiving module carries a `CardPlay.qml`.** `modules/plex/views/CardPlay.qml` is the reference. It is a thin resolver, not a view the user navigates to:
 
 - `Root.qml` routes to it on `navParams.cardRef`, **ahead of and exclusive of the auth/user gate**. For Plex, falling through that would land a card tap on `UserSelect.qml` whenever `auto_sign_in` is off, and switching profiles from a card would sidestep the profile PIN. A missing sign-in or a pending PIN is surfaced as an error, never a prompt.
-- So it resolves the ref, builds the stream, then **`replaceWith("Player.qml", …)`** — `replaceWith` doesn't push to the nav stack, so the stack stays `[NFC Root] → [Player]` and backing out of playback returns straight to the NFC tap screen instead of stranding the user inside a module so they can tap another card easily after playback stops.
+- So it resolves the ref, builds the stream, then **`replaceWith("Player.qml", …)`** — `replaceWith` doesn't push to the nav stack, so the stack stays one deep and backing out of playback returns straight to the screen the card was tapped from (the NFC tap screen, or whatever else was up), instead of stranding the user inside a module. Tapping another card after playback stops is then immediate, wherever they were.
 - It doesn't write player state back to the service (Plex's `set_audio_stream` / `set_subtitle_stream`) — a card tap must not mutate stored per-item preferences. Whatever the server already prefers is what plays.
 - Errors render in the NFC module's visual language, so a card tap looks the same whichever module ends up serving it.
 
@@ -674,7 +694,27 @@ The wall clock in the top-right corner. A VCR always shows the time, so it is in
 
 It hides while something else owns the display — `root.displayOwned`, a guarded mirror of `idleTracker.mpvActive || idleTracker.scriptActive` alongside `hints` and `appVersion`, since binding those context properties directly throws a TypeError when the root context is invalidated. A weather forecast or a takeover script draws its own full screen, clock included.
 
-The clock and a screen's header share the top row, so `root.cornerReserve` (the clock's own width plus a gutter, and any status line beside it — therefore wider for `11:59 PM` than for `23:59`) is what anything at the right end of that row subtracts: `AppBar`'s width, and the IP address in `views/Settings.qml`.
+The clock and a screen's header share the top row, so `root.cornerReserve` (the clock's own width plus a gutter, and anything beside it — therefore wider for `11:59 PM` than for `23:59`) is what anything at the right end of that row subtracts: `AppBar`'s width, and the IP address in `views/Settings.qml`.
+
+The corner reads right-to-left as **clock → shell badges → module status line**, and each measurement is the shell's so everything on the line stays aligned whichever module is up:
+
+| Property | What it is |
+|---|---|
+| `cornerMargin`, `cornerCenterY` | Where the clock sits — matched to the clock the playback OSD draws, so the time doesn't move when mpv takes the screen |
+| `badgeGap`, `cornerBadges` | What the shell itself hangs beside the clock: `NfcIndicator`'s width plus `badgeGap` (half the gutter — a badge reads as part of the clock, not as the next thing along), 0 when it is hidden |
+| `statusMargin` | Where a module anchors its own status line — clear of both of the above |
+| `statusReserve` | Written **by** the module that draws one (a `Binding`, so it is released when the module unloads) |
+| `cornerReserve` | The lot, for a header to subtract |
+
+### NfcIndicator (`views/Components/NfcIndicator.qml`)
+
+The NFC reader's light, drawn by `Main.qml` beside the clock whenever the module is enabled with `tap_anywhere` on and a driver exists — the corner is where the eye already goes, and a reader that listens from every screen has to say so somewhere.
+
+- **Dim** (`tertiaryColor`): the module is on, but nothing is listening — no reader plugged in, or the shell has taps disarmed.
+- **Lit** (`secondaryColor`): a tap would be picked up right now.
+- **Beating** in `accentColor` for a card that matched and is about to play, `primaryColor` for one with nothing mapped to it — which keeps beating for as long as that card sits on the reader. A tap arrives with no keypress and no screen of its own, so this is its only acknowledgement before the app moves.
+
+The beat animates the component's own `pulse` property, which the tint's `opacity` binding multiplies by — an animation writing that bound property directly would break the binding for good.
 
 ### AppBar (`views/Components/AppBar.qml`)
 
@@ -783,7 +823,7 @@ Full-screen takeover that writes an NFC card for the item a detail view is showi
 
 Call `open()` to show it; it emits `closed()` when done. Two things worth preserving if you touch it:
 
-- **Capture is armed only while it is open**, so a card resting near the reader while the user browses can never trigger a write. Arming is always a deliberate action, never a passive listen. The backend handles capture *ahead of* its module-active gate, because arming happens from another module's screen.
+- **Capture is armed only while it is open**, so a card resting near the reader while the user browses can never trigger a write. Arming is always a deliberate action, never a passive listen. The backend handles capture *ahead of* the tap gates, so arming a write always wins over playing the card — which matters now that a tap plays from anywhere (see [Card Hand-off](#card-hand-off-nfc--a-module)).
 - **Choices carry a stable `action` field; behaviour never keys off the label text.** An earlier version matched `indexOf("shuffle")` on the label and silently broke the moment the wording changed.
 
 Writing also offers an option to the user to replace any previous tag file for that UID, that way a card can be written easily from with the UI.

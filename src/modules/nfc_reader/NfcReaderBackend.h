@@ -46,6 +46,15 @@ class NfcReaderBackend : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool available READ available CONSTANT)
     Q_PROPERTY(bool pcscAvailable READ pcscAvailable CONSTANT)
+    // The module's "enabled" setting, which is also what decides whether the
+    // reader is polled at all. The app shell shows its corner indicator on this.
+    Q_PROPERTY(bool enabled READ enabled NOTIFY enabledChanged)
+    // The "Tap From Any Screen" setting. The shell reads it for both halves of
+    // what it turns on: taps armed everywhere, and the corner indicator that says
+    // so. The third half is hide_from_menu() below.
+    Q_PROPERTY(bool tapAnywhere READ tapAnywhere NOTIFY tapAnywhereChanged)
+    Q_PROPERTY(bool tapsArmed READ tapsArmed NOTIFY tapsArmedChanged)
+    Q_PROPERTY(bool moduleActive READ moduleActive NOTIFY moduleActiveChanged)
     Q_PROPERTY(bool readerConnected READ readerConnected NOTIFY readerConnectedChanged)
     Q_PROPERTY(QString readerName READ readerName NOTIFY readerConnectedChanged)
     Q_PROPERTY(QString cardState READ cardState NOTIFY cardStateChanged)
@@ -61,16 +70,35 @@ public:
     Q_INVOKABLE void reloadMapping();
     Q_INVOKABLE void resetAfterPlayback();
 
-    // The module's Root.qml raises/lowers this on load/unload. The configured
-    // enabled setting owns polling lifetime; active view state only decides
-    // whether card events may change state or request playback.
+    // Whether a tapped card may do anything at all. The app shell raises this on
+    // every screen it owns and lowers it while something else has the display
+    // (mpv, a takeover script) or while a card it already accepted is still on
+    // its way to a player. The configured enabled setting owns polling lifetime;
+    // this only decides whether card events may change state or request playback.
+    Q_INVOKABLE void setTapsArmed(bool armed);
+
+    // The module's Root.qml raises/lowers this on load/unload. Taps are armed by
+    // it too — the module's own screen is never not listening — but its real job
+    // is to say who routes a tap: while it is up the module's own view does
+    // (it has a cassette to animate), and everywhere else the shell does.
     Q_INVOKABLE void setModuleActive(bool active);
 
+    // This module's QML entry point, so the shell can route a tapped card into
+    // this module's player the same way it routes one into another module's,
+    // without naming the module itself.
+    Q_INVOKABLE QString entryPoint() const;
+
+    // Probed by AppCore::scan_for_modules to leave this module off the main menu.
+    // With taps read from every screen there is nothing left to open the module's
+    // own screen for, and a row that only ever says "tap a card" is a row in the
+    // way. Its settings are unaffected — those live in Settings, not the menu.
+    Q_INVOKABLE bool hide_from_menu() const { return m_tapAnywhere; }
+
     // Card-write capture. While armed, the next tapped card is reported via
-    // cardCaptured instead of being played, and it works from anywhere in the app
-    // (unlike ordinary taps, which are gated on the NFC module being on screen).
-    // Arming is always a deliberate user action — never a passive listen — so a
-    // card set down near the reader while browsing can't trigger a write.
+    // cardCaptured instead of being played — it takes precedence over an ordinary
+    // tap, which by then plays from wherever the app happens to be. Arming is
+    // always a deliberate user action — never a passive listen — so a card set
+    // down near the reader while browsing can't trigger a write.
     Q_INVOKABLE void setCardCapture(bool armed);
     // Existing mapping title for a UID, or empty when the card is unmapped. Lets
     // the writer confirm before replacing a card that already plays something.
@@ -102,6 +130,10 @@ public:
     // Lets the UI tell "no reader plugged in" apart from "this build has no
     // PC/SC support, so only a PN532 will work".
     bool pcscAvailable() const;
+    bool enabled() const { return m_pollingEnabled; }
+    bool tapAnywhere() const { return m_tapAnywhere; }
+    bool tapsArmed() const { return m_tapsArmed; }
+    bool moduleActive() const { return m_moduleActive; }
     bool readerConnected() const { return m_readerConnected; }
     // e.g. "ACS ACR122U PICC Interface" or "PN532 v1.6 (/dev/ttyUSB0)".
     QString readerName() const { return m_readerName; }
@@ -111,6 +143,10 @@ public:
     QString videoTitle() const { return m_videoTitle; }
 
 signals:
+    void enabledChanged();
+    void tapAnywhereChanged();
+    void tapsArmedChanged();
+    void moduleActiveChanged();
     void readerConnectedChanged();
     void cardStateChanged();
     void playbackRequested(const QString &videoPath);
@@ -143,6 +179,7 @@ private:
     QString m_tagsDir;
     QHash<QString, MappingEntry> m_mapping;
     bool m_pollingEnabled = false;
+    bool m_tapAnywhere = false;
     QThread *m_workerThread = nullptr;
     NfcPollWorker *m_worker = nullptr;
     QTimer *m_watchdog = nullptr;
@@ -155,6 +192,7 @@ private:
     QString m_videoTitle;
     QString m_lastUid;
     bool m_playbackActive = false;
+    bool m_tapsArmed = false;
     bool m_moduleActive = false;
     bool m_captureArmed = false;
 

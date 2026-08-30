@@ -3,6 +3,7 @@ AppBar AppBar.qml
 Clock Clock.qml
 MarqueeText MarqueeText.qml
 NfcCardWriter NfcCardWriter.qml
+NfcIndicator NfcIndicator.qml
 PosterCell PosterCell.qml
 PosterGrid PosterGrid.qml
 PosterShelf PosterShelf.qml
